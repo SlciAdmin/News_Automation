@@ -67,8 +67,12 @@ class Config:
     AUDIO_HOST_BASE_URL = os.getenv('AUDIO_HOST_BASE_URL', '').strip()
     
     # ===== Audio Duration Limits (4-5 minutes) =====
-    MIN_AUDIO_DURATION_SECONDS = int(os.getenv('MIN_AUDIO_DURATION_SECONDS', '240'))
-    MAX_AUDIO_DURATION_SECONDS = int(os.getenv('MAX_AUDIO_DURATION_SECONDS', '300'))
+    MIN_AUDIO_DURATION_SECONDS = int(os.getenv('MIN_AUDIO_DURATION_SECONDS', '240'))  # 4 minutes
+    MAX_AUDIO_DURATION_SECONDS = int(os.getenv('MAX_AUDIO_DURATION_SECONDS', '300'))  # 5 minutes
+    
+    # ===== Audio Processing =====
+    ALLOW_LONGER_AUDIO = os.getenv('ALLOW_LONGER_AUDIO', 'false').lower() == 'true'  # Set to true if you want to allow longer audio
+    AUTO_TRIM_AUDIO = os.getenv('AUTO_TRIM_AUDIO', 'false').lower() == 'true'  # Set to true to auto-trim to max duration
     
     @classmethod
     def create_dirs(cls):
