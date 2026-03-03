@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎙️ Broadcast Admin Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --primary-light: #818cf8;
+            --success: #10b981;
+            --success-light: #34d399;
+            --danger: #ef4444;
+            --danger-light: #f87171;
+            --warning: #f59e0b;
+            --info: #3b82f6;
+            --bg-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --bg-light: #f8fafc;
+            --card-bg: #ffffff;
+            --text-primary: #1e293b;
+            --text-secondary: #64748b;
+            --border: #e2e8f0;
+            --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+            --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+            --radius: 12px;
+            --radius-lg: 16px;
+            --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg-light);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        /* ===== Animations ===== */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-5px); }
+        }
+        
+        @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+
+        .animate-fade { animation: fadeIn 0.4s ease-out forwards; }
+        .animate-slide { animation: slideIn 0.3s ease-out forwards; }
+        .animate-pulse { animation: pulse 2s infinite; }
+        .animate-bounce { animation: bounce 1s infinite; }
+        
+        .spinner {
+            width: 20px; height: 20px;
+            border: 2px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            display: inline-block;
+        }
+
+        /* ===== Header ===== */
+        .header {
+            background: var(--card-bg);
+            padding: 1rem 1.5rem;
+            box-shadow: var(--shadow);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+            background: rgba(255, 255, 255, 0.95);
+        }
+        
+        .header h1 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            background: var(--bg-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .logout {
+            background: var(--danger);
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            transition: var(--transition);
+            box-shadow: var(--shadow-sm);
+        }
+        
+        .logout:hover {
+            background: var(--danger-light);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow);
+        }
+
+        /* ===== Container ===== */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1.5rem;
+        }
+
+        /* ===== Auto Banner ===== */
+        .auto-banner {
+            background: linear-gradient(135deg, var(--success), var(--success-light));
+            color: white;
+            padding: 1rem 1.5rem;
+            border-radius: var(--radius);
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            box-shadow: var(--shadow);
+            animation: slideIn 0.5s ease-out;
+        }
+        
+        .auto-banner i { font-size: 1.3rem; animation: bounce 2s infinite; }
+
+        /* ===== Stats Grid ===== */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        
+        .stat-card {
+            background: var(--card-bg);
+            padding: 1.25rem;
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow);
+            text-align: center;
+            transition: var(--transition);
+            border: 1px solid var(--border);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 3px;
+            background: var(--bg-gradient);
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-lg);
+            border-color: var(--primary-light);
+        }
+        
+        .stat-card h3 {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--primary);
+            transition: var(--transition);
+        }
+        
+        .stat-card:hover .value {
+            color: var(--primary-dark);
+            transform: scale(1.05);
+        }
+        
+        .stat-card .status {
+            font-size: 0.85rem;
+            margin-top: 0.25rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 20px;
+            display: inline-block;
+        }
+        
+        .status.connected { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+        .status.disconnected { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+
+        /* ===== Cards ===== */
+        .card {
+            background: var(--card-bg);
+            border-radius: var(--radius-lg);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border);
+            transition: var(--transition);
+            animation: fadeIn 0.4s ease-out;
+        }
+        
+        .card:hover {
+            box-shadow: var(--shadow-lg);
+            border-color: var(--primary-light);
+        }
+        
+        .card h2 {
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 2px solid var(--border);
+            font-size: 1.25rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .card h2 i { color: var(--primary); }
+
+        /* ===== Forms ===== */
+        .form-row {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-bottom: 1rem;
+        }
+        
+        .form-group {
+            flex: 1;
+            min-width: 200px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 0.4rem;
+            font-weight: 500;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: var(--transition);
+            background: var(--bg-light);
+        }
+        
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: var(--primary);
+            background: white;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+        }
+
+        /* ===== Buttons ===== */
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: var(--transition);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .btn::after {
+            content: '';
+            position: absolute;
+            top: 0; left: -100%;
+            width: 100%; height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            transition: left 0.5s;
+        }
+        
+        .btn:hover::after { left: 100%; }
+        
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+            box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4);
+        }
+        
+        .btn-primary:hover {
+            background: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(99, 102, 241, 0.6);
+        }
+        
+        .btn-success {
+            background: var(--success);
+            color: white;
+            box-shadow: 0 4px 14px rgba(16, 185, 129, 0.4);
+        }
+        
+        .btn-success:hover {
+            background: #059669;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.6);
+        }
+        
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+            padding: 0.4rem 0.8rem;
+            font-size: 0.85rem;
+            box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+        }
+        
+        .btn-danger:hover {
+            background: var(--danger-light);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.5);
+        }
+        
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+        
+        .btn:disabled::after { display: none; }
+
+        /* ===== Tables ===== */
+        .table-container {
+            overflow-x: auto;
+            margin: 0 -1.5rem;
+            padding: 0 1.5rem;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            font-size: 0.95rem;
+        }
+        
+        th {
+            background: var(--bg-light);
+            padding: 1rem 1.25rem;
+            text-align: left;
+            font-weight: 600;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 2px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        
+        td {
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+            transition: var(--transition);
+        }
+        
+        tr:hover td {
+            background: rgba(99, 102, 241, 0.03);
+        }
+        
+        tr:last-child td { border-bottom: none; }
+        
+        code {
+            background: var(--bg-light);
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            color: var(--primary-dark);
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            border: 1px solid var(--border);
+        }
+
+        /* ===== Messages / Toasts ===== */
+        .message {
+            padding: 0.875rem 1.25rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            display: none;
+            font-weight: 500;
+            animation: slideIn 0.3s ease-out;
+            border-left: 4px solid;
+        }
+        
+        .message.success {
+            background: rgba(16, 185, 129, 0.1);
+            color: #065f46;
+            border-left-color: var(--success);
+        }
+        
+        .message.error {
+            background: rgba(239, 68, 68, 0.1);
+            color: #991b1b;
+            border-left-color: var(--danger);
+        }
+        
+        .message.info {
+            background: rgba(59, 130, 246, 0.1);
+            color: #1e40af;
+            border-left-color: var(--info);
+        }
+
+        /* ===== Empty State ===== */
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--text-secondary);
+        }
+        
+        .empty-state i {
+            font-size: 3rem;
+            color: var(--border);
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+
+        /* ===== Footer ===== */
+        footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            border-top: 1px solid var(--border);
+            margin-top: 2rem;
+            background: var(--card-bg);
+        }
+
+        /* ===== Responsive ===== */
+        @media (max-width: 768px) {
+            .header { padding: 0.875rem 1rem; }
+            .header h1 { font-size: 1.2rem; }
+            .container { padding: 1rem; }
+            .card { padding: 1.25rem; }
+            .form-row { flex-direction: column; }
+            .form-group { min-width: 100%; }
+            .stats { grid-template-columns: 1fr; }
+            table { font-size: 0.9rem; }
+            th, td { padding: 0.75rem 1rem; }
+        }
+
+        /* ===== Loading Skeleton ===== */
+        .skeleton {
+            background: linear-gradient(90deg, var(--bg-light) 25%, var(--border) 50%, var(--bg-light) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 4px;
+        }
+        
+        .skeleton.text { height: 1rem; width: 100%; }
+        .skeleton.title { height: 1.5rem; width: 60%; margin-bottom: 0.5rem; }
+        .skeleton.row { height: 2.5rem; margin-bottom: 0.5rem; }
+
+        /* ===== Badge ===== */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.25rem 0.625rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .badge.english { background: rgba(59, 130, 246, 0.15); color: var(--info); }
+        .badge.hindi { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+        .badge.both { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+
+        /* ===== Staggered Animation Delays ===== */
+        .animate-fade[data-delay="1"] { animation-delay: 0.05s; }
+        .animate-fade[data-delay="2"] { animation-delay: 0.10s; }
+        .animate-fade[data-delay="3"] { animation-delay: 0.15s; }
+        .animate-fade[data-delay="4"] { animation-delay: 0.20s; }
+        .animate-fade[data-delay="5"] { animation-delay: 0.25s; }
+        .animate-fade[data-delay="6"] { animation-delay: 0.30s; }
+        .animate-fade[data-delay="7"] { animation-delay: 0.35s; }
+        .animate-fade[data-delay="8"] { animation-delay: 0.40s; }
+        .animate-fade[data-delay="9"] { animation-delay: 0.45s; }
+        .animate-fade[data-delay="10"] { animation-delay: 0.50s; }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <h1><i class="fas fa-broadcast-tower"></i> Broadcast Admin</h1>
+        <a href="/logout" class="logout"><i class="fas fa-sign-out-alt"></i> Logout</a>
+    </header>
+
+    <!-- Main Container -->
+    <main class="container">
+        
+        <!-- Auto-Broadcast Banner -->
+        <div class="auto-banner">
+            <i class="fas fa-bolt"></i>
+            <div>
+                <strong>⚡ Auto-Broadcast Active</strong><br>
+                <small>Runs {{ config.SCHEDULE_START_HOUR }}:00 - {{ config.SCHEDULE_END_HOUR }}:00 IST every {{ config.SCHEDULE_INTERVAL_MINUTES }} min</small>
+            </div>
+        </div>
+
+        <!-- Stats Cards -->
+        <div class="stats">
+            <div class="stat-card animate-fade" style="animation-delay: 0.1s">
+                <h3><i class="fas fa-users"></i> Subscribers</h3>
+                <div class="value">{{ count }}</div>
+                <span class="status connected">Active</span>
+            </div>
+            <div class="stat-card animate-fade" style="animation-delay: 0.2s">
+                <h3><i class="fab fa-whatsapp"></i> WhatsApp</h3>
+                <div class="value" id="wa-status">
+                    <span class="spinner"></span>
+                </div>
+            </div>
+            <div class="stat-card animate-fade" style="animation-delay: 0.3s">
+                <h3><i class="fas fa-clock"></i> IST Time</h3>
+                <div class="value" id="cur-time" style="font-size:1.5rem">--:--</div>
+                <small style="color:var(--text-secondary)">Asia/Kolkata</small>
+            </div>
+        </div>
+
+        <!-- Manual Broadcast Card -->
+        <div class="card animate-slide">
+            <h2><i class="fas fa-rocket"></i> Manual Broadcast</h2>
+            <p style="color:var(--text-secondary); margin-bottom:1rem">Send broadcast immediately to all active subscribers.</p>
+            <div id="bcast-msg" class="message"></div>
+            <button class="btn btn-success" id="btn-bcast" onclick="triggerBroadcast()">
+                <i class="fas fa-paper-plane"></i> Send Broadcast Now
+            </button>
+        </div>
+
+        <!-- Add Subscriber Card -->
+        <div class="card animate-slide" style="animation-delay: 0.1s">
+            <h2><i class="fas fa-user-plus"></i> Add Subscriber</h2>
+            <div id="add-msg" class="message"></div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label><i class="fas fa-phone"></i> Phone Number</label>
+                    <input type="tel" id="phone" placeholder="+91 98765 43210" pattern="^\+?[\d\s\-()]{10,}$" required>
+                </div>
+                <div class="form-group">
+                    <label><i class="fas fa-user"></i> Name (Optional)</label>
+                    <input type="text" id="name" placeholder="John Doe">
+                </div>
+                <div class="form-group">
+                    <label><i class="fas fa-language"></i> Language</label>
+                    <select id="lang">
+                        <option value="both">🌐 Both (English + Hindi)</option>
+                        <option value="english">🇬🇧 English Only</option>
+                        <option value="hindi">🇮🇳 Hindi Only</option>
+                    </select>
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="addSub()">
+                <i class="fas fa-plus-circle"></i> Add Subscriber
+            </button>
+        </div>
+
+        <!-- Subscribers List -->
+        <div class="card animate-slide" style="animation-delay: 0.2s">
+            <h2><i class="fas fa-list"></i> Active Subscribers</h2>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Phone</th>
+                            <th>Name</th>
+                            <th>Language</th>
+                            <th>Joined</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for sub in subscribers %}
+                    <!-- ✅ FIXED: Use data-delay instead of inline style -->
+                    <tr class="animate-fade" data-delay="{{ loop.index }}">
+                        <td><code><i class="fas fa-phone"></i> {{ sub.phone_number }}</code></td>
+                        <td>{{ sub.name or '<span style="color:var(--text-secondary)">—</span>'|safe }}</td>
+                        <td>
+                            <span class="badge {{ sub.language_pref }}">
+                                <i class="fas fa-globe"></i> {{ sub.language_pref }}
+                            </span>
+                        </td>
+                        <td>
+                            <i class="far fa-calendar"></i> 
+                            {{ sub.subscribed_at.strftime('%d %b %Y') if sub.subscribed_at else '-' }}
+                        </td>
+                        <td>
+                            <button class="btn btn-danger" onclick="removeSub('{{ sub.phone_number }}')">
+                                <i class="fas fa-trash"></i> Remove
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% if not subscribers %}
+            <div class="empty-state">
+                <i class="fas fa-users"></i>
+                <p>No subscribers yet</p>
+                <small>Add your first subscriber using the form above 👆</small>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Broadcast History -->
+        <div class="card animate-slide" style="animation-delay: 0.3s">
+            <h2><i class="fas fa-history"></i> Broadcast History</h2>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Time</th>
+                            <th>Sent</th>
+                            <th>Failed</th>
+                            <th>Trigger</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for log in history %}
+                    <tr>
+                        <td><i class="far fa-calendar-alt"></i> {{ log.broadcast_date.strftime('%d %b %Y') if log.broadcast_date else '--' }}</td>
+                        <td>{{ log.broadcast_time.strftime('%I:%M %p') if log.broadcast_time else '--' }}</td>
+                        <td style="color:var(--success); font-weight:600">
+                            <i class="fas fa-check-circle"></i> {{ log.total_sent }}
+                        </td>
+                        <td style="color:var(--danger); font-weight:600">
+                            <i class="fas fa-times-circle"></i> {{ log.total_failed }}
+                        </td>
+                        <td><small><i class="fas fa-user"></i> {{ log.triggered_by }}</small></td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% if not history %}
+            <div class="empty-state">
+                <i class="fas fa-inbox"></i>
+                <p>No broadcasts yet</p>
+                <small>Auto-broadcast starts at {{ config.SCHEDULE_START_HOUR }}:00 IST</small>
+            </div>
+            {% endif %}
+        </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer>
+        <i class="fas fa-broadcast-tower"></i> 
+        AIR News Broadcast System | 
+        Auto-runs {{ config.SCHEDULE_START_HOUR }}:00-{{ config.SCHEDULE_END_HOUR }}:00 IST
+        <br><small style="color:var(--text-secondary); margin-top:0.25rem; display:block">
+            <i class="fas fa-shield-alt"></i> Secure • <i class="fas fa-sync"></i> Real-time • <i class="fas fa-mobile-alt"></i> Responsive
+        </small>
+    </footer>
+
+    <!-- JavaScript (Same as before - no changes needed) -->
+    <script>
+        // ===== Toast Message System =====
+        function showToast(text, type = 'info', duration = 5000) {
+            const toast = document.createElement('div');
+            toast.className = `message ${type}`;
+            toast.style.cssText = `
+                position: fixed; top: 20px; right: 20px; z-index: 1000;
+                min-width: 300px; max-width: 400px; box-shadow: var(--shadow-lg);
+                display: flex; align-items: center; gap: 0.75rem;
+            `;
+            const icons = { success: '✅', error: '❌', info: 'ℹ️' };
+            toast.innerHTML = `<span>${icons[type]}</span><span>${text}</span>`;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.transform = 'translateX(0)';
+                toast.style.opacity = '1';
+            }, 10);
+            
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateX(20px)';
+                setTimeout(() => toast.remove(), 300);
+            }, duration);
+        }
+
+        // ===== Add Subscriber =====
+        async function addSub() {
+            const phone = document.getElementById('phone').value.trim();
+            const name = document.getElementById('name').value.trim();
+            const lang = document.getElementById('lang').value;
+            
+            if (!phone) {
+                showToast('Please enter a phone number', 'error');
+                return;
+            }
+            
+            const btn = event.target;
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Adding...';
+            
+            try {
+                const r = await fetch('/api/subscriber', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ phone_number: phone, name: name, language: lang })
+                });
+                const d = await r.json();
+                
+                if (d.success) {
+                    showToast(d.message, 'success');
+                    setTimeout(() => location.reload(), 1000);
+                } else {
+                    showToast(d.error || 'Failed to add subscriber', 'error');
+                }
+            } catch(e) {
+                showToast('Connection error: ' + e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
+        }
+
+        // ===== Remove Subscriber =====
+        async function removeSub(phone) {
+            if (!confirm(`Remove subscriber ${phone}? This action cannot be undone.`)) return;
+            
+            try {
+                const r = await fetch('/api/subscriber/' + encodeURIComponent(phone), { method: 'DELETE' });
+                const d = await r.json();
+                
+                if (d.success) {
+                    showToast(d.message, 'success');
+                    setTimeout(() => location.reload(), 800);
+                } else {
+                    showToast(d.error || 'Failed to remove', 'error');
+                }
+            } catch(e) {
+                showToast('Error: ' + e.message, 'error');
+            }
+        }
+
+        // ===== Trigger Broadcast =====
+        async function triggerBroadcast() {
+            if (!confirm('🚀 Send broadcast to ALL subscribers now?\n\nThis may take 2-5 minutes.')) return;
+            
+            const btn = document.getElementById('btn-bcast');
+            const originalHtml = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Broadcasting...';
+            
+            showToast('🔄 Starting broadcast... Please wait', 'info', 10000);
+            
+            try {
+                const r = await fetch('/api/trigger-broadcast', { method: 'POST' });
+                const d = await r.json();
+                
+                if (d.success) {
+                    showToast(`✅ Done! Sent: ${d.sent}/${d.total} | Failed: ${d.failed}`, 'success', 8000);
+                    setTimeout(() => location.reload(), 2500);
+                } else {
+                    showToast('❌ Failed: ' + (d.error || 'Unknown error'), 'error');
+                }
+            } catch(e) {
+                showToast('❌ Error: ' + e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+            }
+        }
+
+        // ===== Refresh Status =====
+        async function refreshStatus() {
+            try {
+                const r = await fetch('/api/status');
+                const d = await r.json();
+                
+                const timeEl = document.getElementById('cur-time');
+                if (d.current_time_ist) {
+                    const time = d.current_time_ist.split(' ')[1]?.substring(0, 5);
+                    timeEl.textContent = time || '--:--';
+                }
+                
+                const waEl = document.getElementById('wa-status');
+                if (d.whatsapp_connected) {
+                    waEl.innerHTML = '<i class="fas fa-check-circle" style="color:var(--success)"></i> Connected';
+                    waEl.style.color = 'var(--success)';
+                } else {
+                    waEl.innerHTML = '<i class="fas fa-times-circle" style="color:var(--danger)"></i> Disconnected';
+                    waEl.style.color = 'var(--danger)';
+                }
+                
+            } catch(e) {
+                console.warn('Status refresh failed:', e);
+            }
+        }
+
+        // ===== Initialize =====
+        document.addEventListener('DOMContentLoaded', () => {
+            refreshStatus();
+            setInterval(refreshStatus, 30000);
+            
+            document.getElementById('phone')?.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') addSub();
+            });
+            
+            document.querySelectorAll('.stat-card .value').forEach((el, i) => {
+                setTimeout(() => {
+                    el.style.opacity = '1';
+                    el.style.transform = 'scale(1)';
+                }, 200 + i * 100);
+            });
+        });
+
+        // ===== Keyboard Shortcuts =====
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.key === 'Enter') {
+                e.preventDefault();
+                triggerBroadcast();
+            }
+            if (e.key === 'Escape') {
+                document.querySelectorAll('.message').forEach(el => {
+                    el.style.display = 'none';
+                });
+            }
+        });
+    </script>
+</body>
+</html>
