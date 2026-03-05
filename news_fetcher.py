@@ -18,6 +18,37 @@ import shutil
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# ✅ CONFIGURATION: FFmpeg Path (Windows Example)
+# =============================================================================
+FFMPEG_PATH = r"C:\ffmpeg\bin\ffmpeg.exe"   # Update this path to your FFmpeg installation
+
+# For cross-platform compatibility, fallback to system PATH if custom path doesn't exist
+def get_ffmpeg_path():
+    """Return FFmpeg executable path - robust version"""
+    logger.debug(f"🔍 Checking FFMPEG_PATH: {FFMPEG_PATH}")
+    
+    # Try explicit path
+    if os.path.isfile(FFMPEG_PATH):
+        logger.info(f"✅ FFmpeg found at: {FFMPEG_PATH}")
+        return FFMPEG_PATH
+    
+    # Try with .exe extension
+    if os.name == 'nt' and not FFMPEG_PATH.lower().endswith('.exe'):
+        exe_path = FFMPEG_PATH + '.exe'
+        if os.path.isfile(exe_path):
+            logger.info(f"✅ FFmpeg found at: {exe_path}")
+            return exe_path
+    
+    # Fallback to system PATH
+    ffmpeg_in_path = shutil.which("ffmpeg")
+    if ffmpeg_in_path:
+        logger.info(f"✅ FFmpeg found in PATH: {ffmpeg_in_path}")
+        return ffmpeg_in_path
+    
+    logger.error(f"❌ FFmpeg NOT found at: {FFMPEG_PATH}")
+    return FFMPEG_PATH
+
 # -----------------------------
 # SESSION WITH RETRY STRATEGY
 # -----------------------------
@@ -49,7 +80,7 @@ def get_ist_time():
     return datetime.now(pytz.timezone(Config.TIMEZONE))
 
 # -----------------------------
-# HELPER: Resolve Final URL (MISSING FUNCTION - ADD THIS)
+# HELPER: Resolve Final URL
 # -----------------------------
 def resolve_final_url(url, session=None):
     """Follow redirects and return the final working URL"""
@@ -81,72 +112,80 @@ def get_audio_duration(file_path):
         return None
 
 def validate_audio_duration(file_path):
-    """Check if audio duration is between 4-5 minutes (240-300 seconds)"""
-    duration = get_audio_duration(file_path)
-    if duration is None:
-        logger.warning("⚠️ Could not validate duration - accepting file")
-        return True, duration
+    """Validate audio duration and return validity status + duration value"""
     
+    duration = get_audio_duration(file_path)
+
+    if duration is None:
+        logger.warning("⚠️ Could not detect audio duration. Accepting file.")
+        return True, None
+
     min_dur = Config.MIN_AUDIO_DURATION_SECONDS
     max_dur = Config.MAX_AUDIO_DURATION_SECONDS
-    
-    if min_dur <= duration <= max_dur:
-        logger.info(f"✅ Duration valid: {duration:.2f}s (required: {min_dur}-{max_dur}s)")
-        return True, duration
-    else:
-        logger.warning(f"⚠️ Duration out of range: {duration:.2f}s (required: {min_dur}-{max_dur}s)")
-        
-        # If auto-trim is enabled and duration is longer than max, we can trim it
-        if Config.AUTO_TRIM_AUDIO and duration > max_dur:
-            logger.info(f"✂️ Will trim audio from {duration:.2f}s to {max_dur}s")
-            return True, duration  # Will be trimmed later
-        # If allow longer is enabled, accept anyway
-        elif Config.ALLOW_LONGER_AUDIO:
-            logger.info(f"⚠️ Accepting longer audio (ALLOW_LONGER_AUDIO=true)")
-            return True, duration
-        else:
-            return False, duration
 
+    # Don't reject long audio - let trim handle it
+    if duration > max_dur:
+        logger.info(f"📏 Audio is {duration:.2f}s (will trim to {max_dur}s)")
+        return True, duration
+
+    # Too short
+    if duration < min_dur:
+        logger.warning(f"⚠️ Audio too short: {duration:.2f}s (min required: {min_dur}s)")
+        return False, duration
+
+    # Perfect range
+    logger.info(f"✅ Duration valid: {duration:.2f}s")
+    return True, duration
+
+
+# =============================================================================
+# ✅ MERGED: Trim Audio to Duration using FFmpeg (with FFMPEG_PATH)
+# =============================================================================
 def trim_audio_to_duration(input_path, max_duration=300):
-    """Trim audio to max duration using FFmpeg"""
+    """
+    Trim audio using FFmpeg safely and reliably
+    """
+
     try:
-        # Check if FFmpeg is available
+        ffmpeg = get_ffmpeg_path()
+
+        # check ffmpeg
         try:
-            subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-        except:
-            logger.error("❌ FFmpeg not installed. Cannot trim audio.")
+            subprocess.run([ffmpeg, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        except Exception:
+            logger.error("❌ FFmpeg not working or not found")
             return input_path
-        
-        # Create output path
-        output_path = input_path.replace('.mp3', f'_trimmed_{max_duration}s.mp3')
-        if output_path == input_path:
-            output_path = input_path.replace('.mp3', '') + f'_trimmed_{max_duration}s.mp3'
-        
-        # Trim audio to max_duration seconds
+
+        # output path
+        output_path = input_path.replace(".mp3", "_trimmed.mp3")
+
         cmd = [
-            'ffmpeg', '-i', input_path,
-            '-t', str(max_duration),
-            '-c', 'copy',
-            '-y',  # Overwrite output file
+            ffmpeg,
+            "-y",
+            "-i", input_path,
+            "-ss", "0",
+            "-t", str(max_duration),
+            "-acodec", "copy",
             output_path
         ]
-        
-        logger.info(f"✂️ Trimming audio to {max_duration}s...")
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
+
+        logger.info(f"✂️ Trimming audio to {max_duration} seconds")
+
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
         if result.returncode == 0 and os.path.exists(output_path):
-            logger.info(f"✅ Audio trimmed successfully: {output_path}")
+            logger.info(f"✅ Trim successful: {output_path}")
             return output_path
-        else:
-            logger.error(f"❌ Trimming failed: {result.stderr}")
-            return input_path
-            
+
+        logger.error("❌ FFmpeg trimming failed")
+        return input_path
+
     except Exception as e:
         logger.error(f"❌ Trim error: {e}")
         return input_path
 
 # =============================================================================
-# ✅ NEW FUNCTION: Convert English Audio to Hindi using FFmpeg
+# ✅ Convert English Audio to Hindi using FFmpeg (Placeholder)
 # =============================================================================
 def convert_audio_to_hindi(english_audio_path):
     """
@@ -154,28 +193,20 @@ def convert_audio_to_hindi(english_audio_path):
     Note: This is a placeholder. You'll need to integrate with a translation API
     """
     try:
+        ffmpeg_exe = get_ffmpeg_path()
+        
         # Generate Hindi filename
         hindi_filename = english_audio_path.replace('.mp3', '_hindi.mp3')
         if hindi_filename == english_audio_path:
             hindi_filename = english_audio_path.replace('.mp3', '') + '_hindi.mp3'
         
-        # Check if FFmpeg is available
+        # Check if FFmpeg is available (for future real conversion)
         try:
-            subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+            subprocess.run([ffmpeg_exe, '-version'], capture_output=True, check=True)
         except:
-            logger.error("❌ FFmpeg not installed. Please install FFmpeg for audio conversion")
-            # For now, just copy the file
-            shutil.copy2(english_audio_path, hindi_filename)
-            logger.info(f"⚠️ Using English audio as Hindi placeholder: {hindi_filename}")
-            return hindi_filename
+            logger.warning(f"⚠️ FFmpeg not available at {ffmpeg_exe}, using fallback copy method")
         
-        # For now, we'll just copy the English audio as Hindi
-        # In production, you would:
-        # 1. Extract speech from English audio using speech-to-text (Google Speech API)
-        # 2. Translate text to Hindi using Google Translate API
-        # 3. Convert Hindi text to speech using text-to-speech (Google TTS)
-        
-        # Placeholder: Copy English as Hindi for now
+        # For now, we'll just copy the English audio as Hindi placeholder
         shutil.copy2(english_audio_path, hindi_filename)
         logger.info(f"⚠️ Using English audio as Hindi placeholder: {hindi_filename}")
         logger.info("🔧 To implement real conversion, integrate with Google Cloud Speech-to-Text + Translate + Text-to-Speech")
@@ -187,7 +218,7 @@ def convert_audio_to_hindi(english_audio_path):
         return None
 
 # =============================================================================
-# ✅ FIXED: Fetch English Morning News (8:00-8:30 AM)
+# ✅ Fetch English Morning News (8:00-8:30 AM)
 # =============================================================================
 def fetch_english_morning_news():
     """
@@ -196,7 +227,7 @@ def fetch_english_morning_news():
     """
     session = get_session()
     
-    # The exact URL provided
+    # The exact URL provided (stripped trailing spaces)
     target_url = "https://www.newsonair.gov.in/national-bulletins/?listen_news_cat=morning-news&listen_news_lang=english"
     
     headers = {
@@ -221,11 +252,9 @@ def fetch_english_morning_news():
         audio_urls = []
         
         # Method 1: Find audio player with morning news
-        # Look for audio elements specifically for morning news
         audio_players = soup.find_all("div", class_=re.compile(r"audio-player|player|media-player|bulletins"))
         
         for player in audio_players:
-            # Find audio tags
             audio = player.find("audio")
             if audio:
                 source = audio.find("source")
@@ -236,7 +265,6 @@ def fetch_english_morning_news():
                     if ".mp3" in url.lower():
                         audio_urls.append(url)
             
-            # Find direct links
             for a in player.find_all("a", href=True):
                 href = a["href"].strip()
                 if ".mp3" in href.lower():
@@ -249,7 +277,6 @@ def fetch_english_morning_news():
             for a in soup.find_all("a", href=True):
                 href = a["href"].strip()
                 if ".mp3" in href.lower():
-                    # Check if it's morning news
                     link_text = a.get_text().lower()
                     if "morning" in link_text or "प्रातः" in link_text:
                         if not href.startswith("http"):
@@ -270,7 +297,6 @@ def fetch_english_morning_news():
         unique_urls = [u for u in audio_urls if not (u in seen or seen.add(u))]
         
         if unique_urls:
-            # Get the latest/primary morning news URL
             latest_url = resolve_final_url(unique_urls[0], session)
             now = get_ist_time()
             date_display = now.strftime("%d-%m-%Y")
@@ -304,7 +330,6 @@ def fetch_audio_bulletins():
     Returns: Dict with 'english' and 'hindi' bulletin data
     """
     try:
-        # Get English morning news
         logger.info("📡 Fetching English morning news...")
         english_bulletins = fetch_english_morning_news()
         
@@ -321,17 +346,15 @@ def fetch_audio_bulletins():
             temp_path = download_audio_temp(english_bulletin["url"])
             
             if temp_path:
-                # Check duration
                 duration_valid, duration = validate_audio_duration(temp_path)
                 english_bulletin['duration'] = duration
                 
                 if not duration_valid and not Config.ALLOW_LONGER_AUDIO and not Config.AUTO_TRIM_AUDIO:
-                    logger.error(f"❌ Audio duration {duration:.2f}s is outside {Config.MIN_AUDIO_DURATION_SECONDS}-{Config.MAX_AUDIO_DURATION_SECONDS}s range and auto-trim is disabled")
+                    logger.error(f"❌ Audio duration {duration:.2f}s is outside {Config.MIN_AUDIO_DURATION_SECONDS}-{Config.MAX_AUDIO_DURATION_SECONDS}s range")
                     return {"english": None, "hindi": None}
         except Exception as e:
             logger.warning(f"⚠️ Could not validate duration: {e}")
         finally:
-            # Clean up temp file
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
@@ -342,7 +365,7 @@ def fetch_audio_bulletins():
         hindi_bulletin = english_bulletin.copy()
         hindi_bulletin['language'] = 'hindi'
         hindi_bulletin['display_name'] = english_bulletin['display_name'].replace('ENGLISH', 'HINDI')
-        hindi_bulletin['url'] = english_bulletin['url']  # Will be converted after download
+        hindi_bulletin['url'] = english_bulletin['url']
         
         return {
             "english": english_bulletin,
@@ -367,27 +390,27 @@ def download_audio_temp(url):
         return None
 
 # -----------------------------
-# DOWNLOAD AUDIO WITH DURATION CHECK
+# DOWNLOAD AUDIO WITH DURATION CHECK & FORCE TRIM
 # -----------------------------
 def download_audio(bulletin, max_retries=3):
-    """Download audio file with duration validation and optional trimming"""
+    """Download audio file with duration validation and FORCE TRIM if too long"""
     session = get_session()
-    
+
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0",
         "Accept": "*/*",
         "Accept-Encoding": "identity",
         "Connection": "keep-alive",
         "Referer": "https://www.newsonair.gov.in/",
     }
-    
+
     for attempt in range(max_retries):
         try:
             url = bulletin["url"]
             filename = bulletin["display_name"]
             local_path = os.path.join(Config.AUDIO_DIR, filename)
-            
-            # If it's Hindi and we already have English, we need to convert
+
+            # Hindi conversion
             if bulletin['language'] == 'hindi':
                 english_path = local_path.replace('HINDI', 'ENGLISH')
                 if os.path.exists(english_path):
@@ -395,80 +418,109 @@ def download_audio(bulletin, max_retries=3):
                     hindi_path = convert_audio_to_hindi(english_path)
                     if hindi_path and os.path.exists(hindi_path):
                         return hindi_path
-            
+
             logger.info(f"⬇️ Downloading: {filename} (attempt {attempt+1}/{max_retries})")
-            
-            response = session.get(url, headers=headers, stream=True, timeout=120, verify=True, allow_redirects=True)
+
+            response = session.get(url, headers=headers, stream=True, timeout=120)
             response.raise_for_status()
-            
-            content_type = response.headers.get("Content-Type", "").lower()
-            if "text/html" in content_type or "application/json" in content_type:
-                logger.error(f"❌ Got {content_type} instead of audio!")
-                return None
-            
+
             with open(local_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
-            
+
             if not os.path.exists(local_path):
-                logger.error(f"❌ File not saved: {local_path}")
+                logger.error("❌ File not saved")
                 return None
-            
+
             file_size = os.path.getsize(local_path)
-            logger.info(f"📦 Downloaded {file_size/1024:.1f} KB to {filename}")
-            
+            logger.info(f"📦 Downloaded {file_size/1024:.1f} KB")
+
             # Validate MP3 header
             with open(local_path, "rb") as f:
                 header = f.read(10)
                 is_valid_mp3 = (
-                    (header[0] == 0xFF and (header[1] & 0xE0) == 0xE0) or
-                    header[:3] == b'ID3' or
-                    header[:4] == b'\x00\x00\x00\x1c'
+                    (header[0] == 0xFF and (header[1] & 0xE0) == 0xE0)
+                    or header[:3] == b'ID3'
                 )
+
                 if not is_valid_mp3 and file_size < 50000:
-                    logger.error(f"❌ Invalid audio file: {file_size} bytes")
-                    if os.path.exists(local_path):
-                        os.remove(local_path)
+                    logger.error("❌ Invalid audio file")
+                    os.remove(local_path)
                     return None
-            
-            # Check duration
+
+            # Get duration but don't reject yet - use updated validate function
             duration_valid, duration = validate_audio_duration(local_path)
             bulletin['duration'] = duration
-            
-            # If audio is too long and auto-trim is enabled, trim it
-            if duration and duration > Config.MAX_AUDIO_DURATION_SECONDS and Config.AUTO_TRIM_AUDIO:
-                logger.info(f"✂️ Audio is {duration:.2f}s, trimming to {Config.MAX_AUDIO_DURATION_SECONDS}s")
-                trimmed_path = trim_audio_to_duration(local_path, Config.MAX_AUDIO_DURATION_SECONDS)
+
+            # ===============================
+            # ✅ TRIM IF TOO LONG
+            # ===============================
+            if duration and duration > Config.MAX_AUDIO_DURATION_SECONDS:
+                logger.info(f"✂️ Audio too long ({duration:.2f}s). Trimming to {Config.MAX_AUDIO_DURATION_SECONDS}s...")
                 
-                # Replace original with trimmed if trimming succeeded
-                if trimmed_path != local_path and os.path.exists(trimmed_path):
-                    # Remove original
+                trimmed_path = trim_audio_to_duration(
+                    local_path,
+                    Config.MAX_AUDIO_DURATION_SECONDS
+                )
+                
+                if trimmed_path and os.path.exists(trimmed_path) and trimmed_path != local_path:
                     os.remove(local_path)
-                    # Rename trimmed to original name
                     os.rename(trimmed_path, local_path)
-                    logger.info(f"✅ Trimmed audio saved as: {local_path}")
+                    logger.info(f"✅ Trim complete")
                     
-                    # Update duration
+                    # Get new duration after trim
                     new_duration = get_audio_duration(local_path)
                     bulletin['duration'] = new_duration
-            
+                    duration = new_duration  # Update duration variable for next check
+
+            # Now check if final audio is too short
+            if duration and duration < Config.MIN_AUDIO_DURATION_SECONDS:
+                logger.error("❌ Audio too short after trim")
+                os.remove(local_path)
+                return None
+
             return local_path
-                
-        except ssl.SSLError as e:
-            logger.error(f"❌ SSL error downloading: {e}")
-            return None
-        except requests.exceptions.ConnectionError as e:
-            logger.warning(f"⚠️ Connection error: {e}")
-        except requests.exceptions.Timeout:
-            logger.warning(f"⚠️ Download timeout")
-        except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if e.response else "Unknown"
-            logger.error(f"❌ HTTP {status} error: {e}")
+
         except Exception as e:
             logger.error(f"❌ Download error: {e}", exc_info=True)
-        
+
         if attempt < max_retries - 1:
             time.sleep(2 ** attempt)
-    
+
     return None
+
+# =============================================================================
+# ✅ MAIN ENTRY POINT (Example Usage)
+# =============================================================================
+if __name__ == "__main__":
+    # Setup basic logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    logger.info("🚀 Starting AIR News Audio Fetcher")
+    
+    # Fetch bulletins
+    result = fetch_audio_bulletins()
+    
+    if result.get("english"):
+        logger.info(f"✅ English bulletin ready: {result['english']['display_name']}")
+    
+    if result.get("hindi"):
+        logger.info(f"✅ Hindi bulletin ready: {result['hindi']['display_name']}")
+    
+    # Download the files
+    if result.get("english"):
+        eng_path = download_audio(result["english"])
+        if eng_path:
+            logger.info(f"💾 English audio saved: {eng_path}")
+    
+    if result.get("hindi"):
+        hindi_path = download_audio(result["hindi"])
+        if hindi_path:
+            logger.info(f"💾 Hindi audio saved: {hindi_path}")
+    
+    logger.info("✨ Finished")
