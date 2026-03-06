@@ -4,7 +4,6 @@ import os
 import logging
 import re
 import time
-import ssl
 from datetime import datetime, timedelta
 import pytz
 from config import Config
@@ -19,41 +18,28 @@ import shutil
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# ✅ CONFIGURATION: FFmpeg Path (Windows Example)
+# ✅ CONFIGURATION: FFmpeg Path
 # =============================================================================
-FFMPEG_PATH = r"C:\ffmpeg\bin\ffmpeg.exe"   # Update this path to your FFmpeg installation
+FFMPEG_PATH = r"C:\ffmpeg\bin\ffmpeg.exe"
 
-# For cross-platform compatibility, fallback to system PATH if custom path doesn't exist
 def get_ffmpeg_path():
-    """Return FFmpeg executable path - robust version"""
-    logger.debug(f"🔍 Checking FFMPEG_PATH: {FFMPEG_PATH}")
-    
-    # Try explicit path
+    """Return FFmpeg executable path"""
     if os.path.isfile(FFMPEG_PATH):
-        logger.info(f"✅ FFmpeg found at: {FFMPEG_PATH}")
         return FFMPEG_PATH
-    
-    # Try with .exe extension
     if os.name == 'nt' and not FFMPEG_PATH.lower().endswith('.exe'):
         exe_path = FFMPEG_PATH + '.exe'
         if os.path.isfile(exe_path):
-            logger.info(f"✅ FFmpeg found at: {exe_path}")
             return exe_path
-    
-    # Fallback to system PATH
     ffmpeg_in_path = shutil.which("ffmpeg")
     if ffmpeg_in_path:
-        logger.info(f"✅ FFmpeg found in PATH: {ffmpeg_in_path}")
         return ffmpeg_in_path
-    
-    logger.error(f"❌ FFmpeg NOT found at: {FFMPEG_PATH}")
+    logger.error(f"❌ FFmpeg NOT found")
     return FFMPEG_PATH
 
 # -----------------------------
-# SESSION WITH RETRY STRATEGY
+# SESSION WITH RETRY
 # -----------------------------
 def create_session():
-    """Create requests session with automatic retry logic"""
     session = requests.Session()
     retry_strategy = Retry(
         total=3,
@@ -67,234 +53,171 @@ def create_session():
     return session
 
 _session = None
-
 def get_session():
-    """Get or create global session"""
     global _session
     if _session is None:
         _session = create_session()
     return _session
 
 def get_ist_time():
-    """Get current time in configured timezone"""
     return datetime.now(pytz.timezone(Config.TIMEZONE))
 
 # -----------------------------
-# HELPER: Resolve Final URL
+# RESOLVE FINAL URL
 # -----------------------------
 def resolve_final_url(url, session=None):
-    """Follow redirects and return the final working URL"""
     if session is None:
         session = get_session()
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        resp = session.head(url, headers=headers, timeout=15, allow_redirects=True, verify=True)
-        if resp.status_code in [200, 302, 301]:
+        resp = session.head(url, headers=headers, timeout=15, allow_redirects=True)
+        if resp.status_code in [200, 301, 302]:
             return resp.url
-        resp = session.get(url, headers=headers, timeout=15, stream=True, allow_redirects=True, verify=True)
+        resp = session.get(url, headers=headers, timeout=15, stream=True)
         return resp.url
-    except Exception as e:
-        logger.warning(f"⚠️ Could not resolve URL {url}: {e}")
+    except:
         return url
 
 # -----------------------------
-# AUDIO DURATION VALIDATION
+# AUDIO DURATION
 # -----------------------------
 def get_audio_duration(file_path):
-    """Get audio duration in seconds using mutagen"""
     try:
         audio = MP3(file_path)
-        duration = audio.info.length
-        logger.info(f"🎵 Audio duration: {duration:.2f} seconds ({duration/60:.2f} minutes)")
-        return duration
-    except Exception as e:
-        logger.warning(f"⚠️ Could not get duration: {e}")
+        return audio.info.length
+    except:
         return None
 
 def validate_audio_duration(file_path):
-    """Validate audio duration and return validity status + duration value"""
-    
+    """Validate audio is within 1-5 minutes (60-300 seconds)"""
     duration = get_audio_duration(file_path)
-
     if duration is None:
-        logger.warning("⚠️ Could not detect audio duration. Accepting file.")
+        logger.warning("⚠️ Could not detect duration, accepting file")
         return True, None
-
+    
     min_dur = Config.MIN_AUDIO_DURATION_SECONDS
     max_dur = Config.MAX_AUDIO_DURATION_SECONDS
-
-    # Don't reject long audio - let trim handle it
-    if duration > max_dur:
-        logger.info(f"📏 Audio is {duration:.2f}s (will trim to {max_dur}s)")
-        return True, duration
-
-    # Too short
+    
     if duration < min_dur:
-        logger.warning(f"⚠️ Audio too short: {duration:.2f}s (min required: {min_dur}s)")
+        logger.warning(f"⚠️ Audio too short: {duration:.2f}s < {min_dur}s")
         return False, duration
-
-    # Perfect range
+    if duration > max_dur:
+        logger.warning(f"⚠️ Audio too long: {duration:.2f}s > {max_dur}s")
+        return False, duration
+    
     logger.info(f"✅ Duration valid: {duration:.2f}s")
     return True, duration
 
-
 # =============================================================================
-# ✅ MERGED: Trim Audio to Duration using FFmpeg (with FFMPEG_PATH)
+# ✅ FIXED: Check for 7:00-7:30 AM time slot (ACCEPTS 07:00 to 07:30)
 # =============================================================================
-def trim_audio_to_duration(input_path, max_duration=300):
+def is_7am_time_slot(text):
     """
-    Trim audio using FFmpeg safely and reliably
+    Check if text contains news from 7:00-7:30 AM slot
+    Accepts: 07:00, 07:05, 07:10, 07:15, 07:20, 07:25, 07:30
+    Rejects: 06:xx, 08:xx, 09:xx, etc.
     """
-
-    try:
-        ffmpeg = get_ffmpeg_path()
-
-        # check ffmpeg
-        try:
-            subprocess.run([ffmpeg, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        except Exception:
-            logger.error("❌ FFmpeg not working or not found")
-            return input_path
-
-        # output path
-        output_path = input_path.replace(".mp3", "_trimmed.mp3")
-
-        cmd = [
-            ffmpeg,
-            "-y",
-            "-i", input_path,
-            "-ss", "0",
-            "-t", str(max_duration),
-            "-acodec", "copy",
-            output_path
-        ]
-
-        logger.info(f"✂️ Trimming audio to {max_duration} seconds")
-
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-        if result.returncode == 0 and os.path.exists(output_path):
-            logger.info(f"✅ Trim successful: {output_path}")
-            return output_path
-
-        logger.error("❌ FFmpeg trimming failed")
-        return input_path
-
-    except Exception as e:
-        logger.error(f"❌ Trim error: {e}")
-        return input_path
+    if not text:
+        return False
+    
+    text_lower = text.lower()
+    
+    # ✅ ACCEPT: Any time from 07:00 to 07:30
+    # This pattern matches 07:00, 07:05, 07:10, 07:15, 07:20, 07:25, 07:30
+    seven_am_pattern = r'(0?7\s*:\s*[0-3][0-9])'
+    has_7am = bool(re.search(seven_am_pattern, text_lower))
+    
+    # Also check for Hindi "सात" (seven)
+    if not has_7am:
+        has_7am = bool(re.search(r'सात\s*(बजे|प्रातः|सुबह)', text_lower))
+    
+    if not has_7am:
+        return False
+    
+    # ❌ REJECT: Times outside 7:00-7:30 range
+    # Check for 8 AM, 9 AM, 6 AM, etc.
+    reject_patterns = [
+        r'0?8\s*:\s*\d+', r'0?9\s*:\s*\d+', r'1[0-2]\s*:\s*\d+',
+        r'0?6\s*:\s*\d+', r'0?[0-5]\s*:\s*\d+',
+        r'eight', r'nine', r'ten', r'eleven', r'twelve',
+        r'आठ', r'नौ', r'दस'
+    ]
+    
+    for pattern in reject_patterns:
+        if re.search(pattern, text_lower):
+            logger.debug(f"⚠️ Rejected (other time): {text[:100]}")
+            return False
+    
+    logger.info(f"✅ Accepted 7AM slot: {text[:80]}")
+    return True
 
 # =============================================================================
-# ✅ Convert English Audio to Hindi using FFmpeg (Placeholder)
-# =============================================================================
-def convert_audio_to_hindi(english_audio_path):
-    """
-    Convert English audio to Hindi using speech-to-text and text-to-speech
-    Note: This is a placeholder. You'll need to integrate with a translation API
-    """
-    try:
-        ffmpeg_exe = get_ffmpeg_path()
-        
-        # Generate Hindi filename
-        hindi_filename = english_audio_path.replace('.mp3', '_hindi.mp3')
-        if hindi_filename == english_audio_path:
-            hindi_filename = english_audio_path.replace('.mp3', '') + '_hindi.mp3'
-        
-        # Check if FFmpeg is available (for future real conversion)
-        try:
-            subprocess.run([ffmpeg_exe, '-version'], capture_output=True, check=True)
-        except:
-            logger.warning(f"⚠️ FFmpeg not available at {ffmpeg_exe}, using fallback copy method")
-        
-        # For now, we'll just copy the English audio as Hindi placeholder
-        shutil.copy2(english_audio_path, hindi_filename)
-        logger.info(f"⚠️ Using English audio as Hindi placeholder: {hindi_filename}")
-        logger.info("🔧 To implement real conversion, integrate with Google Cloud Speech-to-Text + Translate + Text-to-Speech")
-        
-        return hindi_filename
-        
-    except Exception as e:
-        logger.error(f"❌ Audio conversion error: {e}")
-        return None
-
-# =============================================================================
-# ✅ Fetch English Morning News (8:00-8:30 AM)
+# ✅ FIXED: Fetch English 7:00-7:30 AM News (From Screenshot)
 # =============================================================================
 def fetch_english_morning_news():
-    """
-    Fetch English morning news from the specific URL
-    URL: https://www.newsonair.gov.in/national-bulletins/?listen_news_cat=morning-news&listen_news_lang=english
-    """
+    """Fetch English news from 7:00-7:30 AM slot (e.g., 07:05)"""
     session = get_session()
-    
-    # The exact URL provided (stripped trailing spaces)
-    target_url = "https://www.newsonair.gov.in/national-bulletins/?listen_news_cat=morning-news&listen_news_lang=english"
+    target_url = "https://www.newsonair.gov.in/national-bulletins/?listen_news_cat=&listen_news_lang=english&listen_news_date=&listen_news_time=&submit=Search"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
     }
     
     try:
-        logger.info(f"🔍 Fetching English morning news from: {target_url}")
-        
-        response = session.get(target_url, headers=headers, timeout=30, verify=True)
+        logger.info(f"🔍 Fetching English 7AM news...")
+        response = session.get(target_url, headers=headers, timeout=30)
         
         if response.status_code != 200:
-            logger.error(f"❌ HTTP {response.status_code} for English morning news")
+            logger.error(f"❌ HTTP {response.status_code}")
             return []
         
         soup = BeautifulSoup(response.text, "html.parser")
         audio_urls = []
         
-        # Method 1: Find audio player with morning news
-        audio_players = soup.find_all("div", class_=re.compile(r"audio-player|player|media-player|bulletins"))
-        
-        for player in audio_players:
-            audio = player.find("audio")
+        # Look for news cards/containers
+        for div in soup.find_all("div", class_=re.compile(r"col|card|bulletin|news-item")):
+            # Find audio or links
+            audio = div.find("audio")
+            links = div.find_all("a", href=True)
+            
+            # Check audio tags
             if audio:
                 source = audio.find("source")
                 if source and source.get("src"):
                     url = source["src"].strip()
-                    if not url.startswith("http"):
-                        url = "https://www.newsonair.gov.in" + url.lstrip("/")
                     if ".mp3" in url.lower():
-                        audio_urls.append(url)
+                        context = div.get_text()
+                        if is_7am_time_slot(context):
+                            if not url.startswith("http"):
+                                url = "https://www.newsonair.gov.in" + url.lstrip("/")
+                            audio_urls.append((url, context))
+                            logger.info(f"✅ Found English audio in <audio>: {url}")
             
-            for a in player.find_all("a", href=True):
+            # Check link tags
+            for a in links:
                 href = a["href"].strip()
                 if ".mp3" in href.lower():
-                    if not href.startswith("http"):
-                        href = "https://www.newsonair.gov.in" + href.lstrip("/")
-                    audio_urls.append(href)
-        
-        # Method 2: Find all MP3 links in the page
-        if not audio_urls:
-            for a in soup.find_all("a", href=True):
-                href = a["href"].strip()
-                if ".mp3" in href.lower():
-                    link_text = a.get_text().lower()
-                    if "morning" in link_text or "प्रातः" in link_text:
+                    link_text = a.get_text() + " " + a.get("title", "")
+                    context = div.get_text() + " " + link_text
+                    
+                    if is_7am_time_slot(context):
                         if not href.startswith("http"):
                             href = "https://www.newsonair.gov.in" + href.lstrip("/")
-                        audio_urls.append(href)
-        
-        # Method 3: Regex fallback
-        if not audio_urls:
-            mp3_pattern = r'https?://[^\s"\'<>]+\.mp3(?:\?[^\s"\'<>]*)?'
-            matches = re.findall(mp3_pattern, response.text)
-            for url in matches:
-                clean_url = url.split('"')[0].split("'")[0].strip()
-                if "morning" in clean_url.lower() or "प्रातः" in response.text.lower():
-                    audio_urls.append(clean_url)
+                        audio_urls.append((href, context))
+                        logger.info(f"✅ Found English audio in <a>: {href}")
         
         # Remove duplicates
         seen = set()
-        unique_urls = [u for u in audio_urls if not (u in seen or seen.add(u))]
+        unique_urls = []
+        for url, ctx in audio_urls:
+            if url and url not in seen:
+                seen.add(url)
+                unique_urls.append(url)
+        
+        logger.info(f"🔎 Found {len(unique_urls)} English 7AM URLs")
         
         if unique_urls:
             latest_url = resolve_final_url(unique_urls[0], session)
@@ -304,84 +227,150 @@ def fetch_english_morning_news():
             bulletin = {
                 "url": latest_url,
                 "language": "english",
-                "filename": latest_url.split("/")[-1].split("?")[0],
-                "display_name": f"AIR_MORNING_NEWS_ENGLISH_{date_display}.mp3",
-                "time": "Morning News (8:00-8:30 AM)",
+                "filename": latest_url.split("/")[-1].split("?")[0] or f"air_7am_en_{date_display}.mp3",
+                "display_name": f"AIR_7AM_NEWS_ENGLISH_{date_display}.mp3",
+                "time": "Morning News (7:00-7:30 AM)",
                 "date": date_display,
                 "source_page": target_url,
                 "duration": 0
             }
-            logger.info(f"✅ English morning news found: {latest_url}")
+            logger.info(f"✅ English 7AM bulletin: {latest_url}")
             return [bulletin]
         
-        logger.warning("⚠️ No English morning news found in the page")
+        logger.warning("⚠️ No English 7:00-7:30 AM news found")
+        # Debug: log what we found
+        for div in soup.find_all("div", class_=re.compile(r"col|card"))[:5]:
+            logger.debug(f"📄 Found: {div.get_text()[:200]}")
         return []
         
     except Exception as e:
-        logger.error(f"❌ Error fetching English morning news: {e}", exc_info=True)
+        logger.error(f"❌ Error fetching English 7AM news: {e}", exc_info=True)
         return []
 
 # =============================================================================
-# ✅ MAIN FUNCTION: Fetch both English and Hindi news
+# ✅ FIXED: Fetch Hindi 7:00-7:30 AM News (From Screenshot)
+# =============================================================================
+def fetch_hindi_morning_news():
+    """Fetch Hindi news from 7:00-7:30 AM slot (e.g., 07:00)"""
+    session = get_session()
+    target_url = "https://www.newsonair.gov.in/national-bulletins/?listen_news_cat=&listen_news_lang=hindi&listen_news_date=&listen_news_time=&submit=Search"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "hi-IN,hi;q=0.9,en;q=0.8",
+        "Connection": "keep-alive",
+    }
+    
+    try:
+        logger.info(f"🔍 Fetching Hindi 7AM news...")
+        response = session.get(target_url, headers=headers, timeout=30)
+        
+        if response.status_code != 200:
+            logger.error(f"❌ HTTP {response.status_code}")
+            return []
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        audio_urls = []
+        
+        # Look for news cards
+        for div in soup.find_all("div", class_=re.compile(r"col|card|bulletin|news-item")):
+            audio = div.find("audio")
+            links = div.find_all("a", href=True)
+            
+            # Check audio tags
+            if audio:
+                source = audio.find("source")
+                if source and source.get("src"):
+                    url = source["src"].strip()
+                    if ".mp3" in url.lower():
+                        context = div.get_text()
+                        if is_7am_time_slot(context):
+                            if not url.startswith("http"):
+                                url = "https://www.newsonair.gov.in" + url.lstrip("/")
+                            audio_urls.append((url, context))
+                            logger.info(f"✅ Found Hindi audio in <audio>: {url}")
+            
+            # Check link tags
+            for a in links:
+                href = a["href"].strip()
+                if ".mp3" in href.lower():
+                    link_text = a.get_text() + " " + a.get("title", "")
+                    context = div.get_text() + " " + link_text
+                    
+                    if is_7am_time_slot(context):
+                        if not href.startswith("http"):
+                            href = "https://www.newsonair.gov.in" + href.lstrip("/")
+                        audio_urls.append((href, context))
+                        logger.info(f"✅ Found Hindi audio in <a>: {href}")
+        
+        # Remove duplicates
+        seen = set()
+        unique_urls = [u for u, _ in audio_urls if u and u not in seen and not seen.add(u)]
+        
+        logger.info(f"🔎 Found {len(unique_urls)} Hindi 7AM URLs")
+        
+        if unique_urls:
+            latest_url = resolve_final_url(unique_urls[0], session)
+            now = get_ist_time()
+            date_display = now.strftime("%d-%m-%Y")
+            
+            bulletin = {
+                "url": latest_url,
+                "language": "hindi",
+                "filename": latest_url.split("/")[-1].split("?")[0] or f"air_7am_hi_{date_display}.mp3",
+                "display_name": f"AIR_7AM_NEWS_HINDI_{date_display}.mp3",
+                "time": "Morning News (7:00-7:30 AM)",
+                "date": date_display,
+                "source_page": target_url,
+                "duration": 0
+            }
+            logger.info(f"✅ Hindi 7AM bulletin: {latest_url}")
+            return [bulletin]
+        
+        logger.warning("⚠️ No Hindi 7:00-7:30 AM news found")
+        return []
+        
+    except Exception as e:
+        logger.error(f"❌ Error fetching Hindi 7AM news: {e}", exc_info=True)
+        return []
+
+# =============================================================================
+# ✅ MAIN: Fetch Both Languages
 # =============================================================================
 def fetch_audio_bulletins():
-    """
-    Fetch English morning news and convert to Hindi
-    Returns: Dict with 'english' and 'hindi' bulletin data
-    """
+    """Fetch English AND Hindi 7:00-7:30 AM news"""
+    result = {"english": None, "hindi": None}
+    
     try:
-        logger.info("📡 Fetching English morning news...")
-        english_bulletins = fetch_english_morning_news()
+        eng_list = fetch_english_morning_news()
+        if eng_list:
+            result["english"] = eng_list[0]
+            logger.info(f"✅ English 7AM ready")
         
-        if not english_bulletins:
-            logger.error("❌ Failed to fetch English morning news")
-            return {"english": None, "hindi": None}
+        hi_list = fetch_hindi_morning_news()
+        if hi_list:
+            result["hindi"] = hi_list[0]
+            logger.info(f"✅ Hindi 7AM ready")
         
-        logger.info(f"✅ Found {len(english_bulletins)} English bulletin(s)")
-        english_bulletin = english_bulletins[0]
+        if not result["english"] and not result["hindi"]:
+            logger.warning("⚠️ No 7:00-7:30 AM news found")
         
-        # Download English audio temporarily to check duration
-        temp_path = None
-        try:
-            temp_path = download_audio_temp(english_bulletin["url"])
-            
-            if temp_path:
-                duration_valid, duration = validate_audio_duration(temp_path)
-                english_bulletin['duration'] = duration
-                
-                if not duration_valid and not Config.ALLOW_LONGER_AUDIO and not Config.AUTO_TRIM_AUDIO:
-                    logger.error(f"❌ Audio duration {duration:.2f}s is outside {Config.MIN_AUDIO_DURATION_SECONDS}-{Config.MAX_AUDIO_DURATION_SECONDS}s range")
-                    return {"english": None, "hindi": None}
-        except Exception as e:
-            logger.warning(f"⚠️ Could not validate duration: {e}")
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass
+        return result
         
-        # For Hindi, we'll convert the English audio
-        hindi_bulletin = english_bulletin.copy()
-        hindi_bulletin['language'] = 'hindi'
-        hindi_bulletin['display_name'] = english_bulletin['display_name'].replace('ENGLISH', 'HINDI')
-        hindi_bulletin['url'] = english_bulletin['url']
-        
-        return {
-            "english": english_bulletin,
-            "hindi": hindi_bulletin
-        }
     except Exception as e:
-        logger.error(f"❌ Error in fetch_audio_bulletins: {e}", exc_info=True)
-        return {"english": None, "hindi": None}
+        logger.error(f"❌ fetch_audio_bulletins error: {e}", exc_info=True)
+        return result
 
+# =============================================================================
+# ✅ DOWNLOAD AUDIO
+# =============================================================================
 def download_audio_temp(url):
-    """Download audio to temp file for checking"""
+    """Download to temp file"""
     session = get_session()
     try:
         with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
-            response = session.get(url, stream=True, timeout=60)
-            for chunk in response.iter_content(chunk_size=8192):
+            resp = session.get(url, stream=True, timeout=60)
+            for chunk in resp.iter_content(chunk_size=8192):
                 if chunk:
                     tmp.write(chunk)
             return tmp.name
@@ -389,138 +378,72 @@ def download_audio_temp(url):
         logger.error(f"❌ Temp download error: {e}")
         return None
 
-# -----------------------------
-# DOWNLOAD AUDIO WITH DURATION CHECK & FORCE TRIM
-# -----------------------------
 def download_audio(bulletin, max_retries=3):
-    """Download audio file with duration validation and FORCE TRIM if too long"""
+    """Download audio - NO trimming"""
     session = get_session()
-
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "*/*",
-        "Accept-Encoding": "identity",
-        "Connection": "keep-alive",
         "Referer": "https://www.newsonair.gov.in/",
     }
-
+    
     for attempt in range(max_retries):
         try:
             url = bulletin["url"]
             filename = bulletin["display_name"]
             local_path = os.path.join(Config.AUDIO_DIR, filename)
-
-            # Hindi conversion
-            if bulletin['language'] == 'hindi':
-                english_path = local_path.replace('HINDI', 'ENGLISH')
-                if os.path.exists(english_path):
-                    logger.info(f"🔄 Converting English to Hindi: {filename}")
-                    hindi_path = convert_audio_to_hindi(english_path)
-                    if hindi_path and os.path.exists(hindi_path):
-                        return hindi_path
-
-            logger.info(f"⬇️ Downloading: {filename} (attempt {attempt+1}/{max_retries})")
-
+            
+            logger.info(f"⬇️ Downloading: {filename}")
+            
             response = session.get(url, headers=headers, stream=True, timeout=120)
             response.raise_for_status()
-
+            
             with open(local_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
-
+            
             if not os.path.exists(local_path):
                 logger.error("❌ File not saved")
                 return None
-
-            file_size = os.path.getsize(local_path)
-            logger.info(f"📦 Downloaded {file_size/1024:.1f} KB")
-
-            # Validate MP3 header
-            with open(local_path, "rb") as f:
-                header = f.read(10)
-                is_valid_mp3 = (
-                    (header[0] == 0xFF and (header[1] & 0xE0) == 0xE0)
-                    or header[:3] == b'ID3'
-                )
-
-                if not is_valid_mp3 and file_size < 50000:
-                    logger.error("❌ Invalid audio file")
+            
+            duration = get_audio_duration(local_path)
+            bulletin['duration'] = duration or 0
+            
+            valid, dur = validate_audio_duration(local_path)
+            if not valid:
+                logger.error(f"❌ Invalid duration {dur:.2f}s")
+                if os.path.exists(local_path):
                     os.remove(local_path)
-                    return None
-
-            # Get duration but don't reject yet - use updated validate function
-            duration_valid, duration = validate_audio_duration(local_path)
-            bulletin['duration'] = duration
-
-            # ===============================
-            # ✅ TRIM IF TOO LONG
-            # ===============================
-            if duration and duration > Config.MAX_AUDIO_DURATION_SECONDS:
-                logger.info(f"✂️ Audio too long ({duration:.2f}s). Trimming to {Config.MAX_AUDIO_DURATION_SECONDS}s...")
-                
-                trimmed_path = trim_audio_to_duration(
-                    local_path,
-                    Config.MAX_AUDIO_DURATION_SECONDS
-                )
-                
-                if trimmed_path and os.path.exists(trimmed_path) and trimmed_path != local_path:
-                    os.remove(local_path)
-                    os.rename(trimmed_path, local_path)
-                    logger.info(f"✅ Trim complete")
-                    
-                    # Get new duration after trim
-                    new_duration = get_audio_duration(local_path)
-                    bulletin['duration'] = new_duration
-                    duration = new_duration  # Update duration variable for next check
-
-            # Now check if final audio is too short
-            if duration and duration < Config.MIN_AUDIO_DURATION_SECONDS:
-                logger.error("❌ Audio too short after trim")
-                os.remove(local_path)
                 return None
-
+            
+            logger.info(f"🎵 Duration: {bulletin['duration']:.2f}s ✅")
             return local_path
-
+            
         except Exception as e:
-            logger.error(f"❌ Download error: {e}", exc_info=True)
-
-        if attempt < max_retries - 1:
-            time.sleep(2 ** attempt)
-
+            logger.error(f"❌ Download error: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            continue
     return None
 
 # =============================================================================
-# ✅ MAIN ENTRY POINT (Example Usage)
+# ✅ TEST
 # =============================================================================
 if __name__ == "__main__":
-    # Setup basic logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logger.info("🚀 Testing AIR 7AM News Fetcher")
     
-    logger.info("🚀 Starting AIR News Audio Fetcher")
-    
-    # Fetch bulletins
     result = fetch_audio_bulletins()
     
     if result.get("english"):
-        logger.info(f"✅ English bulletin ready: {result['english']['display_name']}")
+        path = download_audio(result["english"])
+        if path:
+            logger.info(f"💾 English saved: {path}")
     
     if result.get("hindi"):
-        logger.info(f"✅ Hindi bulletin ready: {result['hindi']['display_name']}")
+        path = download_audio(result["hindi"])
+        if path:
+            logger.info(f"💾 Hindi saved: {path}")
     
-    # Download the files
-    if result.get("english"):
-        eng_path = download_audio(result["english"])
-        if eng_path:
-            logger.info(f"💾 English audio saved: {eng_path}")
-    
-    if result.get("hindi"):
-        hindi_path = download_audio(result["hindi"])
-        if hindi_path:
-            logger.info(f"💾 Hindi audio saved: {hindi_path}")
-    
-    logger.info("✨ Finished")
+    logger.info("✨ Test complete")

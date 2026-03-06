@@ -20,10 +20,10 @@ def in_broadcast_window():
     return now.hour == Config.SCHEDULE_START_HOUR
 
 def run_broadcast_logic(triggered_by='scheduler'):
-    """Core broadcast function - fetches 8-8:30 AM English news and sends at 9 AM"""
+    """Core broadcast function - fetches 7-7:30 AM news, sends at 9 AM"""
     logger.info(f"🎙️ BROADCAST STARTED ({triggered_by})")
     
-    # Skip auto if outside 9 AM window
+    # ✅ Still check 9 AM window for sending
     if triggered_by == 'scheduler' and not in_broadcast_window():
         logger.info("⏰ Outside 9 AM window, skipping auto broadcast")
         return {"success": False, "message": "Outside scheduled window", "skipped": True}
@@ -37,47 +37,14 @@ def run_broadcast_logic(triggered_by='scheduler'):
         if not wa.test_connection():
             return {"success": False, "message": "WhatsApp API failed", "sent": 0, "failed": 0}
         
-        # Fetch English morning news (from 8-8:30 AM)
-        logger.info("🔍 Fetching English morning news (8:00-8:30 AM)...")
+        # ✅ Fetch 7-7:30 AM news (both languages)
+        logger.info("🔍 Fetching 7AM morning news (English + Hindi)...")
         bulletins = news_fetcher.fetch_audio_bulletins()
         
-        if not bulletins["english"]:
-            logger.error("❌ Failed to fetch English morning news")
-            return {"success": False, "message": "No English news found", "sent": 0, "failed": 0}
+        if not bulletins["english"] and not bulletins["hindi"]:
+            logger.error("❌ Failed to fetch any morning news")
+            return {"success": False, "message": "No news found", "sent": 0, "failed": 0}
         
-        # Download English audio
-        logger.info("⬇️ Downloading English audio...")
-        english_path = news_fetcher.download_audio(bulletins["english"])
-        
-        if not english_path:
-            logger.error("❌ Failed to download English audio")
-            return {"success": False, "message": "English download failed", "sent": 0, "failed": 0}
-        
-        # Convert to Hindi or download Hindi version
-        logger.info("🔄 Preparing Hindi audio...")
-        hindi_path = None
-        
-        # Try to get/converthindi
-        if bulletins["hindi"]:
-            hindi_path = news_fetcher.download_audio(bulletins["hindi"])
-        
-        # If no Hindi version, convert English to Hindi
-        if not hindi_path and english_path:
-            logger.info("🎤 Converting English audio to Hindi...")
-            hindi_path = news_fetcher.convert_audio_to_hindi(english_path)
-        
-        if not hindi_path:
-            logger.error("❌ Failed to get Hindi audio")
-            # Clean up English file
-            if os.path.exists(english_path):
-                os.remove(english_path)
-            return {"success": False, "message": "Hindi audio failed", "sent": 0, "failed": 0}
-        
-        # Get durations
-        english_duration = news_fetcher.get_audio_duration(english_path) or 0
-        hindi_duration = news_fetcher.get_audio_duration(hindi_path) or 0
-        
-        # Send to subscribers
         sent, failed = 0, 0
         ist = database.get_ist_time()
         date_str = ist.strftime("%d-%m-%Y")
@@ -90,22 +57,30 @@ def run_broadcast_logic(triggered_by='scheduler'):
             if len(phone) != 12: continue
             
             try:
-                # Send header with morning news info
-                header = f"🎙️ *AIR Morning News*\n📅 {date_str} | ⏰ {time_str}\n🗣️ 8:00-8:30 AM Bulletin"
+                # ✅ Send header
+                header = f"🎙️ *AIR Morning News*\n📅 {date_str} | ⏰ {time_str}\n🗣️ 7:00-7:30 AM Bulletin"
                 wa.send_text_message(phone, header)
                 
-                # Send English audio
-                wa._send_audio_with_upload(phone, english_path, is_local_path=True)
+                # ✅ Send English audio if available
+                if bulletins["english"]:
+                    eng_path = news_fetcher.download_audio(bulletins["english"])
+                    if eng_path:
+                        wa._send_audio_with_upload(phone, eng_path, is_local_path=True)
+                        if os.path.exists(eng_path):
+                            os.remove(eng_path)  # Cleanup
                 
-                # Brief pause
-                time_module.sleep(1)
+                time_module.sleep(1)  # Brief pause
                 
-                # Send Hindi audio
-                wa._send_audio_with_upload(phone, hindi_path, is_local_path=True)
+                # ✅ Send Hindi audio if available
+                if bulletins["hindi"]:
+                    hindi_path = news_fetcher.download_audio(bulletins["hindi"])
+                    if hindi_path:
+                        wa._send_audio_with_upload(phone, hindi_path, is_local_path=True)
+                        if os.path.exists(hindi_path):
+                            os.remove(hindi_path)  # Cleanup
                 
-                # Send footer
-                wa.send_text_message(phone, "✅ Today's morning news delivered!")
-                
+                # ✅ Send footer
+                wa.send_text_message(phone, "✅ Today's 7AM news delivered!")
                 sent += 1
                 logger.info(f"✅ Sent to {phone}")
                 
@@ -115,18 +90,11 @@ def run_broadcast_logic(triggered_by='scheduler'):
             
             time_module.sleep(2)  # Rate limit
         
-        # Cleanup downloaded files
-        for path in [english_path, hindi_path]:
-            if path and os.path.exists(path):
-                os.remove(path)
-        
-        # Log broadcast
+        # ✅ Log broadcast
         database.log_broadcast(
-            sent, failed, 
-            "morning_news", "morning_news_converted", 
-            triggered_by,
-            english_duration,
-            hindi_duration
+            sent, failed,
+            "morning_news_7am_en", "morning_news_7am_hi",
+            triggered_by
         )
         
         logger.info(f"🏁 Complete: {sent} sent, {failed} failed")
