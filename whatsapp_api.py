@@ -10,105 +10,94 @@ class WhatsAppCloudAPI:
     def __init__(self):
         self.phone_number_id = str(Config.WHATSAPP_PHONE_NUMBER_ID).strip()
         self.access_token = str(Config.WHATSAPP_ACCESS_TOKEN).strip()
-        self.api_base = str(Config.WHATSAPP_API_BASE).strip()
-        self.headers = {"Authorization": f"Bearer {self.access_token}"}
+        self.api_base = str(Config.WHATSAPP_API_BASE).strip().rstrip('/')
+        self.headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
         self.media_endpoint = f"{self.api_base}/{self.phone_number_id}/media"
         self.messages_endpoint = f"{self.api_base}/{self.phone_number_id}/messages"
-
-    def upload_media_to_whatsapp(self, file_path, mime_type="audio/mpeg"):
+    
+    def _clean_phone(self, phone):
+        clean = ''.join(filter(str.isdigit, str(phone)))
+        if clean.startswith('0'): clean = clean[1:]
+        if not clean.startswith('91'): clean = '91' + clean
+        return clean
+    
+    def test_connection(self, max_retries=3):
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(f"{self.api_base}/{self.phone_number_id}", headers=self.headers, timeout=15)
+                if resp.status_code == 200: return True
+                time.sleep(2)
+            except: time.sleep(2)
+        return False
+    
+    def upload_media(self, file_path, mime_type="audio/mpeg"):
         try:
-            if not os.path.exists(file_path):
-                return False, f"File not found: {file_path}"
-            
-            file_size = os.path.getsize(file_path)
-            if file_size > 16 * 1024 * 1024:
-                return False, "File exceeds 16MB limit"
-            
-            logger.info(f"📤 Uploading to WhatsApp: {os.path.basename(file_path)}")
+            if not os.path.exists(file_path): return False, "File not found"
+            if os.path.getsize(file_path) > 16*1024*1024: return False, "File too large"
             
             with open(file_path, "rb") as f:
                 files = {"file": (os.path.basename(file_path), f, mime_type)}
                 data = {"messaging_product": "whatsapp"}
-                
-                response = requests.post(self.media_endpoint, headers=self.headers, files=files, data=data, timeout=120)
-                
-            if response.status_code == 200:
-                result = response.json()
+                resp = requests.post(
+                    self.media_endpoint,
+                    headers={"Authorization": self.headers["Authorization"]},
+                    files=files, data=data, timeout=180
+                )
+            
+            if resp.status_code == 200:
+                result = resp.json()
                 media_id = result.get("id")
-                if media_id:
-                    logger.info(f"✅ Media uploaded: {media_id}")
-                    return True, media_id
-            logger.error(f"❌ Upload failed: {response.text}")
-            return False, response.text
+                if media_id: return True, media_id
+            return False, resp.text
         except Exception as e:
-            logger.error(f"❌ Upload exception: {e}")
             return False, str(e)
-
-    def send_audio_message(self, phone_number, media_id):
-        clean_phone = self._clean_phone_number(phone_number)
+    
+    def send_audio(self, phone, media_id):
+        clean = self._clean_phone(phone)
         payload = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": clean_phone,
+            "to": clean,
             "type": "audio",
             "audio": {"id": media_id}
         }
         try:
-            response = requests.post(self.messages_endpoint, headers=self.headers, json=payload, timeout=60)
-            if response.status_code == 200:
-                logger.info(f"✅ Audio sent to {clean_phone}")
-                return True, response.json()
-            logger.error(f"❌ Send failed: {response.text}")
-            return False, response.text
+            resp = requests.post(self.messages_endpoint, headers=self.headers, json=payload, timeout=60)
+            if resp.status_code == 200: return True, resp.json()
+            return False, resp.text
         except Exception as e:
             return False, str(e)
-
-    def send_text_message(self, phone_number, text):
-        clean_phone = self._clean_phone_number(phone_number)
+    
+    def send_audio_file_direct(self, phone, file_path):
+        """
+        ✅ SEND DIRECT AUDIO FILE via WhatsApp
+        Uploads local file and sends as audio attachment
+        """
+        try:
+            success, result = self.upload_media(file_path)
+            if not success:
+                return False, result
+            
+            media_id = result if isinstance(result, str) else result.get("id")
+            return self.send_audio(phone, media_id)
+        except Exception as e:
+            logger.error(f"❌ Direct audio send error: {e}")
+            return False, str(e)
+    
+    def send_text(self, phone, text):
+        clean = self._clean_phone(phone)
         payload = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": clean_phone,
+            "to": clean,
             "type": "text",
             "text": {"body": text}
         }
         try:
-            response = requests.post(self.messages_endpoint, headers=self.headers, json=payload, timeout=30)
-            return response.status_code == 200, response.text
+            resp = requests.post(self.messages_endpoint, headers=self.headers, json=payload, timeout=30)
+            return resp.status_code == 200, resp.text
         except Exception as e:
             return False, str(e)
-
-    def _clean_phone_number(self, phone_number):
-        clean = str(phone_number).replace("+", "").replace(" ", "").strip()
-        if not clean.startswith("91"): clean = "91" + clean
-        return clean
-
-    def _send_audio_with_upload(self, phone_number, audio_source, is_local_path=False):
-        temp_path = None
-        try:
-            if is_local_path:
-                temp_path = audio_source
-            else:
-                # Download if URL provided
-                resp = requests.get(audio_source, timeout=120)
-                temp_path = os.path.join(Config.AUDIO_DIR, f"tmp_{int(time.time())}.mp3")
-                with open(temp_path, "wb") as f: f.write(resp.content)
-            
-            success, media_id = self.upload_media_to_whatsapp(temp_path)
-            if success:
-                return self.send_audio_message(phone_number, media_id)
-            return False, media_id
-        except Exception as e:
-            return False, str(e)
-        finally:
-            if not is_local_path and temp_path and os.path.exists(temp_path):
-                try: os.remove(temp_path)
-                except: pass
-
-    def test_connection(self):
-        try:
-            url = f"{self.api_base}/{self.phone_number_id}"
-            resp = requests.get(url, headers=self.headers, timeout=10)
-            return resp.status_code == 200
-        except:
-            return False

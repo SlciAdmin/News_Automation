@@ -194,19 +194,24 @@ def get_broadcast_history(limit=10):
     finally:
         if conn: release_db_connection(conn)
 
+# Add this to your existing log_broadcast function signature:
 def log_broadcast(sent, failed, en_url, hi_url, triggered_by='scheduler', en_duration=0, hi_duration=0):
     conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('''
-        INSERT INTO broadcast_logs (broadcast_date, broadcast_time, total_sent, total_failed,
-        english_audio_url, hindi_audio_url, english_duration, hindi_duration, triggered_by)
-        VALUES (CURRENT_DATE, CURRENT_TIME, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO broadcast_logs (
+                broadcast_date, broadcast_time, total_sent, total_failed,
+                english_audio_url, hindi_audio_url, english_duration, hindi_duration, triggered_by
+            )
+            VALUES (CURRENT_DATE, CURRENT_TIME, %s, %s, %s, %s, %s, %s, %s)
         ''', (sent, failed, en_url, hi_url, en_duration, hi_duration, triggered_by))
         conn.commit()
+        logger.info(f"📊 Broadcast logged: {sent} sent, {failed} failed")
     except Exception as e:
         logger.error(f"❌ Error logging broadcast: {e}")
+        if conn: conn.rollback()
     finally:
         if conn: release_db_connection(conn)
 
