@@ -1,55 +1,51 @@
 import requests
-from bs4 import BeautifulSoup
 import os
 import logging
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from config import Config
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import mutagen
-from mutagen.mp3 import MP3
-import subprocess
-import tempfile
-import shutil
+import json
+from bs4 import BeautifulSoup
+import urllib.parse
 
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# ✅ CONFIGURATION: FFmpeg Path
+# ✅ CONFIGURATION
 # =============================================================================
-FFMPEG_PATH = r"C:\ffmpeg\bin\ffmpeg.exe"
+BASE_URL = "https://www.newsonair.gov.in"
+NATIONAL_BULLETINS_URL = f"{BASE_URL}/national-bulletins/"
+AUDIO_ARCHIVE_URL = f"{BASE_URL}/audio-archive-search/"
 
-def get_ffmpeg_path():
-    """Return FFmpeg executable path"""
-    if os.path.isfile(FFMPEG_PATH):
-        return FFMPEG_PATH
-    if os.name == 'nt' and not FFMPEG_PATH.lower().endswith('.exe'):
-        exe_path = FFMPEG_PATH + '.exe'
-        if os.path.isfile(exe_path):
-            return exe_path
-    ffmpeg_in_path = shutil.which("ffmpeg")
-    if ffmpeg_in_path:
-        return ffmpeg_in_path
-    logger.error(f"❌ FFmpeg NOT found")
-    return FFMPEG_PATH
-
-# -----------------------------
-# SESSION WITH RETRY
-# -----------------------------
+# =============================================================================
+# SESSION WITH RETRY - Simplified
+# =============================================================================
 def create_session():
     session = requests.Session()
     retry_strategy = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504, 104, 10054, 10060],
-        allowed_methods=["GET", "HEAD", "OPTIONS", "POST"]
+        total=2,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST"]
     )
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
+    
+    # Set realistic browser headers
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    })
+    
     return session
 
 _session = None
@@ -62,384 +58,444 @@ def get_session():
 def get_ist_time():
     return datetime.now(pytz.timezone(Config.TIMEZONE))
 
-# -----------------------------
-# RESOLVE FINAL URL
-# -----------------------------
-def resolve_final_url(url, session=None):
-    if session is None:
-        session = get_session()
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        resp = session.head(url, headers=headers, timeout=15, allow_redirects=True)
-        if resp.status_code in [200, 301, 302]:
-            return resp.url
-        resp = session.get(url, headers=headers, timeout=15, stream=True)
-        return resp.url
-    except:
-        return url
+# =============================================================================
+# ✅ METHOD 1: Direct page scraping (Most Reliable)
+# =============================================================================
+def fetch_from_national_bulletins(language):
+    """
+    Fetch audio bulletins directly from the national-bulletins page
+    This is more reliable than the API
+    """
+    session = get_session()
+    
+    # Map language to URL parameter
+    lang_param = "english" if language == "english" else "hindi"
+    
+    # Try different category combinations
+    categories = ["", "morning-news", "samachar-prabhat", "evening-news", "news-at-nine"]
+    
+    all_bulletins = []
+    
+    for category in categories:
+        if category:
+            search_url = f"{NATIONAL_BULLETINS_URL}?listen_news_cat={category}&listen_news_lang={lang_param}"
+        else:
+            search_url = f"{NATIONAL_BULLETINS_URL}?listen_news_lang={lang_param}"
+        
+        try:
+            logger.info(f"🔍 Scraping: {search_url}")
+            response = session.get(search_url, timeout=20)
+            
+            if response.status_code != 200:
+                logger.warning(f"⚠️ HTTP {response.status_code} for {search_url}")
+                continue
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Look for bulletin items - common patterns
+            bulletin_containers = []
+            
+            # Try different selectors
+            selectors = [
+                'div.col-md-12',
+                'div.col-sm-12',
+                'div.panel-body',
+                'div.news-item',
+                'div.latest-news-item',
+                'div.bulletin-item',
+                'li.media',
+                'div.media',
+                'div.post-item',
+                'article.post'
+            ]
+            
+            for selector in selectors:
+                containers = soup.select(selector)
+                if containers:
+                    bulletin_containers.extend(containers)
+            
+            # Also look for any div that might contain audio links
+            if not bulletin_containers:
+                bulletin_containers = soup.find_all('div', class_=re.compile(r'col|media|post|news|bulletin|item|list'))
+            
+            for container in bulletin_containers:
+                # Look for audio tags
+                audio_tag = container.find('audio')
+                if audio_tag:
+                    source = audio_tag.find('source')
+                    if source and source.get('src'):
+                        audio_url = source['src']
+                        title_tag = container.find(['h2', 'h3', 'h4', 'h5', 'strong', 'p'])
+                        title = title_tag.get_text(strip=True) if title_tag else "Morning News Bulletin"
+                        
+                        if 'mp3' in audio_url.lower():
+                            bulletins = process_audio_url(audio_url, title, language, container.get_text())
+                            all_bulletins.extend(bulletins)
+                
+                # Look for direct MP3 links
+                for link in container.find_all('a', href=True):
+                    href = link['href']
+                    if '.mp3' in href.lower():
+                        title = link.get_text(strip=True) or "Audio Bulletin"
+                        bulletins = process_audio_url(href, title, language, container.get_text())
+                        all_bulletins.extend(bulletins)
+            
+            # Also search the entire page for MP3 links
+            if not all_bulletins:
+                for link in soup.find_all('a', href=True):
+                    href = link['href']
+                    if '.mp3' in href.lower():
+                        title = link.get_text(strip=True) or "Audio Bulletin"
+                        bulletins = process_audio_url(href, title, language, "")
+                        all_bulletins.extend(bulletins)
+                        
+        except Exception as e:
+            logger.debug(f"Error scraping {search_url}: {e}")
+            continue
+    
+    # Remove duplicates based on URL
+    seen_urls = set()
+    unique_bulletins = []
+    for bulletin in all_bulletins:
+        if bulletin['url'] not in seen_urls:
+            seen_urls.add(bulletin['url'])
+            unique_bulletins.append(bulletin)
+    
+    logger.info(f"📊 Found {len(unique_bulletins)} unique {language} bulletins")
+    return unique_bulletins
 
-# -----------------------------
-# AUDIO DURATION
-# -----------------------------
-def get_audio_duration(file_path):
-    try:
-        audio = MP3(file_path)
-        return audio.info.length
-    except:
-        return None
-
-def validate_audio_duration(file_path):
-    """Validate audio is within 1-5 minutes (60-300 seconds)"""
-    duration = get_audio_duration(file_path)
-    if duration is None:
-        logger.warning("⚠️ Could not detect duration, accepting file")
-        return True, None
+def process_audio_url(url, title, language, context_text):
+    """Process and validate audio URL"""
+    bulletins = []
     
-    min_dur = Config.MIN_AUDIO_DURATION_SECONDS
-    max_dur = Config.MAX_AUDIO_DURATION_SECONDS
+    # Make URL absolute
+    if not url.startswith('http'):
+        if url.startswith('//'):
+            url = 'https:' + url
+        elif url.startswith('/'):
+            url = BASE_URL + url
+        else:
+            url = BASE_URL + '/' + url
     
-    if duration < min_dur:
-        logger.warning(f"⚠️ Audio too short: {duration:.2f}s < {min_dur}s")
-        return False, duration
-    if duration > max_dur:
-        logger.warning(f"⚠️ Audio too long: {duration:.2f}s > {max_dur}s")
-        return False, duration
+    # Clean URL (remove query parameters if they cause issues)
+    base_url = url.split('?')[0]
     
-    logger.info(f"✅ Duration valid: {duration:.2f}s")
-    return True, duration
+    if base_url.endswith('.mp3'):
+        bulletin = {
+            "url": base_url,
+            "language": language,
+            "title": title.strip() or f"{language.title()} Morning News",
+            "filename": os.path.basename(base_url),
+            "display_name": f"AIR_{language.upper()}_{datetime.now().strftime('%d%m%Y')}_{title[:30]}.mp3".replace(' ', '_').replace('/', '_'),
+            "time": "Morning News",
+            "date": datetime.now().strftime('%d-%m-%Y'),
+            "source_page": "National Bulletins",
+            "duration": 0,
+            "context": context_text[:200]
+        }
+        bulletins.append(bulletin)
+        logger.info(f"✅ Found: {bulletin['filename']}")
+    
+    return bulletins
 
 # =============================================================================
-# ✅ FIXED: Check for 7:00-7:30 AM time slot (ACCEPTS 07:00 to 07:30)
+# ✅ METHOD 2: Audio Archive Page Scraping
+# =============================================================================
+def fetch_from_audio_archive(language):
+    """Fetch from audio archive search page"""
+    session = get_session()
+    
+    try:
+        response = session.get(AUDIO_ARCHIVE_URL, timeout=20)
+        if response.status_code != 200:
+            return []
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Look for language tabs/buttons
+        lang_tabs = soup.find_all('a', href=True, string=re.compile(language, re.I))
+        
+        bulletins = []
+        
+        # If we find language tabs, click through them (simulate by getting href)
+        for tab in lang_tabs:
+            tab_url = tab['href']
+            if not tab_url.startswith('http'):
+                tab_url = BASE_URL + tab_url
+            
+            try:
+                tab_response = session.get(tab_url, timeout=20)
+                if tab_response.status_code == 200:
+                    tab_soup = BeautifulSoup(tab_response.text, 'html.parser')
+                    
+                    # Find audio links in this tab
+                    for link in tab_soup.find_all('a', href=True):
+                        if '.mp3' in link['href'].lower():
+                            bulletins.extend(process_audio_url(
+                                link['href'], 
+                                link.get_text(), 
+                                language,
+                                ""
+                            ))
+            except:
+                continue
+        
+        return bulletins
+        
+    except Exception as e:
+        logger.error(f"Audio archive error: {e}")
+        return []
+
+# =============================================================================
+# ✅ Check for 7:00-7:30 AM time slot - Simplified
 # =============================================================================
 def is_7am_time_slot(text):
     """
-    Check if text contains news from 7:00-7:30 AM slot
-    Accepts: 07:00, 07:05, 07:10, 07:15, 07:20, 07:25, 07:30
-    Rejects: 06:xx, 08:xx, 09:xx, etc.
+    Simple check for 7 AM related content
     """
     if not text:
         return False
     
     text_lower = text.lower()
     
-    # ✅ ACCEPT: Any time from 07:00 to 07:30
-    # This pattern matches 07:00, 07:05, 07:10, 07:15, 07:20, 07:25, 07:30
-    seven_am_pattern = r'(0?7\s*:\s*[0-3][0-9])'
-    has_7am = bool(re.search(seven_am_pattern, text_lower))
-    
-    # Also check for Hindi "सात" (seven)
-    if not has_7am:
-        has_7am = bool(re.search(r'सात\s*(बजे|प्रातः|सुबह)', text_lower))
-    
-    if not has_7am:
-        return False
-    
-    # ❌ REJECT: Times outside 7:00-7:30 range
-    # Check for 8 AM, 9 AM, 6 AM, etc.
-    reject_patterns = [
-        r'0?8\s*:\s*\d+', r'0?9\s*:\s*\d+', r'1[0-2]\s*:\s*\d+',
-        r'0?6\s*:\s*\d+', r'0?[0-5]\s*:\s*\d+',
-        r'eight', r'nine', r'ten', r'eleven', r'twelve',
-        r'आठ', r'नौ', r'दस'
+    # Check for 7 AM indicators
+    patterns = [
+        r'7[\s:\.]*(00|05|10|15|20|25|30)',  # 7:00, 7.00, 7-00, etc.
+        r'07[\s:\.]*(00|05|10|15|20|25|30)',
+        r'morning[\s-]*7',
+        r'7[\s-]*am',
+        r'सात\s*बजे',
+        r'प्रातः\s*7',
+        r'सुबह\s*7',
+        r'7\s*बजे'
     ]
     
-    for pattern in reject_patterns:
+    for pattern in patterns:
         if re.search(pattern, text_lower):
-            logger.debug(f"⚠️ Rejected (other time): {text[:100]}")
-            return False
+            # Exclude other times
+            if not re.search(r'8[\s:]|9[\s:]|10[\s:]|11[\s:]|12[\s:]', text_lower):
+                logger.info(f"✅ 7AM slot detected")
+                return True
     
-    logger.info(f"✅ Accepted 7AM slot: {text[:80]}")
-    return True
+    return False
 
 # =============================================================================
-# ✅ FIXED: Fetch English 7:00-7:30 AM News (From Screenshot)
+# ✅ Fetch English Morning News
 # =============================================================================
 def fetch_english_morning_news():
-    """Fetch English news from 7:00-7:30 AM slot (e.g., 07:05)"""
-    session = get_session()
-    target_url = "https://www.newsonair.gov.in/national-bulletins/?listen_news_cat=&listen_news_lang=english&listen_news_date=&listen_news_time=&submit=Search"
+    """Fetch English morning news using multiple methods"""
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "keep-alive",
-    }
+    all_bulletins = []
     
-    try:
-        logger.info(f"🔍 Fetching English 7AM news...")
-        response = session.get(target_url, headers=headers, timeout=30)
-        
-        if response.status_code != 200:
-            logger.error(f"❌ HTTP {response.status_code}")
-            return []
-        
-        soup = BeautifulSoup(response.text, "html.parser")
-        audio_urls = []
-        
-        # Look for news cards/containers
-        for div in soup.find_all("div", class_=re.compile(r"col|card|bulletin|news-item")):
-            # Find audio or links
-            audio = div.find("audio")
-            links = div.find_all("a", href=True)
-            
-            # Check audio tags
-            if audio:
-                source = audio.find("source")
-                if source and source.get("src"):
-                    url = source["src"].strip()
-                    if ".mp3" in url.lower():
-                        context = div.get_text()
-                        if is_7am_time_slot(context):
-                            if not url.startswith("http"):
-                                url = "https://www.newsonair.gov.in" + url.lstrip("/")
-                            audio_urls.append((url, context))
-                            logger.info(f"✅ Found English audio in <audio>: {url}")
-            
-            # Check link tags
-            for a in links:
-                href = a["href"].strip()
-                if ".mp3" in href.lower():
-                    link_text = a.get_text() + " " + a.get("title", "")
-                    context = div.get_text() + " " + link_text
-                    
-                    if is_7am_time_slot(context):
-                        if not href.startswith("http"):
-                            href = "https://www.newsonair.gov.in" + href.lstrip("/")
-                        audio_urls.append((href, context))
-                        logger.info(f"✅ Found English audio in <a>: {href}")
-        
-        # Remove duplicates
-        seen = set()
-        unique_urls = []
-        for url, ctx in audio_urls:
-            if url and url not in seen:
-                seen.add(url)
-                unique_urls.append(url)
-        
-        logger.info(f"🔎 Found {len(unique_urls)} English 7AM URLs")
-        
-        if unique_urls:
-            latest_url = resolve_final_url(unique_urls[0], session)
-            now = get_ist_time()
-            date_display = now.strftime("%d-%m-%Y")
-            
-            bulletin = {
-                "url": latest_url,
-                "language": "english",
-                "filename": latest_url.split("/")[-1].split("?")[0] or f"air_7am_en_{date_display}.mp3",
-                "display_name": f"AIR_7AM_NEWS_ENGLISH_{date_display}.mp3",
-                "time": "Morning News (7:00-7:30 AM)",
-                "date": date_display,
-                "source_page": target_url,
-                "duration": 0
-            }
-            logger.info(f"✅ English 7AM bulletin: {latest_url}")
-            return [bulletin]
-        
-        logger.warning("⚠️ No English 7:00-7:30 AM news found")
-        # Debug: log what we found
-        for div in soup.find_all("div", class_=re.compile(r"col|card"))[:5]:
-            logger.debug(f"📄 Found: {div.get_text()[:200]}")
-        return []
-        
-    except Exception as e:
-        logger.error(f"❌ Error fetching English 7AM news: {e}", exc_info=True)
-        return []
+    # Method 1: National Bulletins page
+    logger.info("📡 Trying National Bulletins page...")
+    bulletins = fetch_from_national_bulletins("english")
+    all_bulletins.extend(bulletins)
+    
+    # Method 2: Audio Archive
+    if not all_bulletins:
+        logger.info("📡 Trying Audio Archive...")
+        bulletins = fetch_from_audio_archive("english")
+        all_bulletins.extend(bulletins)
+    
+    # Filter for 7 AM if possible, otherwise take latest
+    filtered = []
+    for bulletin in all_bulletins:
+        full_text = f"{bulletin['title']} {bulletin.get('context', '')}"
+        if is_7am_time_slot(full_text):
+            filtered.append(bulletin)
+            logger.info(f"✅ 7AM English: {bulletin['title']}")
+    
+    if not filtered and all_bulletins:
+        logger.warning("⚠️ No 7AM specific, using latest bulletin")
+        filtered = [all_bulletins[0]]
+    
+    return filtered
 
 # =============================================================================
-# ✅ FIXED: Fetch Hindi 7:00-7:30 AM News (From Screenshot)
+# ✅ Fetch Hindi Morning News
 # =============================================================================
 def fetch_hindi_morning_news():
-    """Fetch Hindi news from 7:00-7:30 AM slot (e.g., 07:00)"""
-    session = get_session()
-    target_url = "https://www.newsonair.gov.in/national-bulletins/?listen_news_cat=&listen_news_lang=hindi&listen_news_date=&listen_news_time=&submit=Search"
+    """Fetch Hindi morning news using multiple methods"""
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept-Language": "hi-IN,hi;q=0.9,en;q=0.8",
-        "Connection": "keep-alive",
-    }
+    all_bulletins = []
     
+    # Method 1: National Bulletins page
+    logger.info("📡 Trying National Bulletins page...")
+    bulletins = fetch_from_national_bulletins("hindi")
+    all_bulletins.extend(bulletins)
+    
+    # Method 2: Audio Archive
+    if not all_bulletins:
+        logger.info("📡 Trying Audio Archive...")
+        bulletins = fetch_from_audio_archive("hindi")
+        all_bulletins.extend(bulletins)
+    
+    # Filter for 7 AM if possible, otherwise take latest
+    filtered = []
+    for bulletin in all_bulletins:
+        full_text = f"{bulletin['title']} {bulletin.get('context', '')}"
+        if is_7am_time_slot(full_text):
+            filtered.append(bulletin)
+            logger.info(f"✅ 7AM Hindi: {bulletin['title']}")
+    
+    if not filtered and all_bulletins:
+        logger.warning("⚠️ No 7AM specific, using latest bulletin")
+        filtered = [all_bulletins[0]]
+    
+    return filtered
+
+# =============================================================================
+# ✅ Get audio duration - Simplified
+# =============================================================================
+def get_audio_duration(file_path):
+    """Simple file size based estimation"""
     try:
-        logger.info(f"🔍 Fetching Hindi 7AM news...")
-        response = session.get(target_url, headers=headers, timeout=30)
-        
-        if response.status_code != 200:
-            logger.error(f"❌ HTTP {response.status_code}")
-            return []
-        
-        soup = BeautifulSoup(response.text, "html.parser")
-        audio_urls = []
-        
-        # Look for news cards
-        for div in soup.find_all("div", class_=re.compile(r"col|card|bulletin|news-item")):
-            audio = div.find("audio")
-            links = div.find_all("a", href=True)
-            
-            # Check audio tags
-            if audio:
-                source = audio.find("source")
-                if source and source.get("src"):
-                    url = source["src"].strip()
-                    if ".mp3" in url.lower():
-                        context = div.get_text()
-                        if is_7am_time_slot(context):
-                            if not url.startswith("http"):
-                                url = "https://www.newsonair.gov.in" + url.lstrip("/")
-                            audio_urls.append((url, context))
-                            logger.info(f"✅ Found Hindi audio in <audio>: {url}")
-            
-            # Check link tags
-            for a in links:
-                href = a["href"].strip()
-                if ".mp3" in href.lower():
-                    link_text = a.get_text() + " " + a.get("title", "")
-                    context = div.get_text() + " " + link_text
-                    
-                    if is_7am_time_slot(context):
-                        if not href.startswith("http"):
-                            href = "https://www.newsonair.gov.in" + href.lstrip("/")
-                        audio_urls.append((href, context))
-                        logger.info(f"✅ Found Hindi audio in <a>: {href}")
-        
-        # Remove duplicates
-        seen = set()
-        unique_urls = [u for u, _ in audio_urls if u and u not in seen and not seen.add(u)]
-        
-        logger.info(f"🔎 Found {len(unique_urls)} Hindi 7AM URLs")
-        
-        if unique_urls:
-            latest_url = resolve_final_url(unique_urls[0], session)
-            now = get_ist_time()
-            date_display = now.strftime("%d-%m-%Y")
-            
-            bulletin = {
-                "url": latest_url,
-                "language": "hindi",
-                "filename": latest_url.split("/")[-1].split("?")[0] or f"air_7am_hi_{date_display}.mp3",
-                "display_name": f"AIR_7AM_NEWS_HINDI_{date_display}.mp3",
-                "time": "Morning News (7:00-7:30 AM)",
-                "date": date_display,
-                "source_page": target_url,
-                "duration": 0
-            }
-            logger.info(f"✅ Hindi 7AM bulletin: {latest_url}")
-            return [bulletin]
-        
-        logger.warning("⚠️ No Hindi 7:00-7:30 AM news found")
-        return []
-        
-    except Exception as e:
-        logger.error(f"❌ Error fetching Hindi 7AM news: {e}", exc_info=True)
-        return []
+        # Try to use mutagen if available
+        import mutagen
+        from mutagen.mp3 import MP3
+        audio = MP3(file_path)
+        return audio.info.length
+    except:
+        # Fallback: estimate from file size (64kbps ~ 8KB/s)
+        file_size = os.path.getsize(file_path)
+        estimated_duration = file_size / (64 * 1024 / 8)  # 64kbps in bytes/sec
+        return estimated_duration
+
+def validate_audio_duration(file_path):
+    """Basic validation"""
+    duration = get_audio_duration(file_path)
+    
+    min_dur = getattr(Config, 'MIN_AUDIO_DURATION_SECONDS', 30)
+    max_dur = getattr(Config, 'MAX_AUDIO_DURATION_SECONDS', 1800)
+    
+    if duration < min_dur:
+        logger.warning(f"⚠️ Audio too short: {duration:.2f}s")
+        return False, duration
+    if duration > max_dur:
+        logger.warning(f"⚠️ Audio too long: {duration:.2f}s")
+        return False, duration
+    
+    logger.info(f"✅ Duration: {duration:.2f}s")
+    return True, duration
 
 # =============================================================================
 # ✅ MAIN: Fetch Both Languages
 # =============================================================================
 def fetch_audio_bulletins():
-    """Fetch English AND Hindi 7:00-7:30 AM news"""
+    """Main function to fetch both English and Hindi bulletins"""
     result = {"english": None, "hindi": None}
     
     try:
+        logger.info("=" * 60)
+        logger.info("📡 FETCHING AIR MORNING NEWS")
+        logger.info("=" * 60)
+        
+        # Fetch English
+        logger.info("\n🇬🇧 ENGLISH NEWS")
         eng_list = fetch_english_morning_news()
         if eng_list:
             result["english"] = eng_list[0]
-            logger.info(f"✅ English 7AM ready")
+            logger.info(f"✅ Selected: {result['english']['title']}")
+            logger.info(f"🔗 URL: {result['english']['url']}")
         
+        # Fetch Hindi
+        logger.info("\n🇮🇳 HINDI NEWS")
         hi_list = fetch_hindi_morning_news()
         if hi_list:
             result["hindi"] = hi_list[0]
-            logger.info(f"✅ Hindi 7AM ready")
+            logger.info(f"✅ Selected: {result['hindi']['title']}")
+            logger.info(f"🔗 URL: {result['hindi']['url']}")
         
         if not result["english"] and not result["hindi"]:
-            logger.warning("⚠️ No 7:00-7:30 AM news found")
+            logger.error("❌ No bulletins found")
+        else:
+            logger.info("\n✅ Bulletins fetched successfully")
         
         return result
         
     except Exception as e:
-        logger.error(f"❌ fetch_audio_bulletins error: {e}", exc_info=True)
+        logger.error(f"❌ Error: {e}")
         return result
 
 # =============================================================================
-# ✅ DOWNLOAD AUDIO
+# ✅ DOWNLOAD AUDIO - Simplified
 # =============================================================================
-def download_audio_temp(url):
-    """Download to temp file"""
-    session = get_session()
-    try:
-        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
-            resp = session.get(url, stream=True, timeout=60)
-            for chunk in resp.iter_content(chunk_size=8192):
-                if chunk:
-                    tmp.write(chunk)
-            return tmp.name
-    except Exception as e:
-        logger.error(f"❌ Temp download error: {e}")
+def download_audio(bulletin, max_retries=2):
+    """Download audio file"""
+    if not bulletin or not bulletin.get("url"):
         return None
-
-def download_audio(bulletin, max_retries=3):
-    """Download audio - NO trimming"""
+    
     session = get_session()
+    
+    # Create directory
+    os.makedirs(Config.AUDIO_DIR, exist_ok=True)
+    
+    # Clean filename
+    filename = re.sub(r'[<>:"/\\|?*]', '', bulletin["display_name"])
+    local_path = os.path.join(Config.AUDIO_DIR, filename)
+    
+    # Check if exists
+    if os.path.exists(local_path):
+        file_size = os.path.getsize(local_path)
+        if file_size > 10240:  # >10KB
+            logger.info(f"✅ Already exists: {filename}")
+            return local_path
+    
     headers = {
         "User-Agent": "Mozilla/5.0",
-        "Accept": "*/*",
-        "Referer": "https://www.newsonair.gov.in/",
+        "Accept": "audio/mpeg,audio/*;q=0.9,*/*;q=0.8",
+        "Referer": BASE_URL + "/",
     }
     
     for attempt in range(max_retries):
         try:
             url = bulletin["url"]
-            filename = bulletin["display_name"]
-            local_path = os.path.join(Config.AUDIO_DIR, filename)
-            
             logger.info(f"⬇️ Downloading: {filename}")
             
-            response = session.get(url, headers=headers, stream=True, timeout=120)
+            response = session.get(url, headers=headers, stream=True, timeout=60)
             response.raise_for_status()
             
+            # Download
             with open(local_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
             
-            if not os.path.exists(local_path):
-                logger.error("❌ File not saved")
-                return None
-            
-            duration = get_audio_duration(local_path)
-            bulletin['duration'] = duration or 0
-            
-            valid, dur = validate_audio_duration(local_path)
-            if not valid:
-                logger.error(f"❌ Invalid duration {dur:.2f}s")
-                if os.path.exists(local_path):
-                    os.remove(local_path)
-                return None
-            
-            logger.info(f"🎵 Duration: {bulletin['duration']:.2f}s ✅")
-            return local_path
+            # Verify
+            if os.path.exists(local_path):
+                file_size = os.path.getsize(local_path)
+                logger.info(f"✅ Downloaded: {file_size/1024:.1f}KB")
+                return local_path
             
         except Exception as e:
-            logger.error(f"❌ Download error: {e}")
+            logger.error(f"❌ Attempt {attempt+1} failed: {e}")
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-            continue
+                time.sleep(2)
+    
     return None
 
 # =============================================================================
-# ✅ TEST
+# ✅ MAIN EXECUTION
 # =============================================================================
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    logger.info("🚀 Testing AIR 7AM News Fetcher")
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%H:%M:%S'
+    )
     
+    logger.info("🚀 AIR News Fetcher Started")
+    logger.info("=" * 60)
+    
+    # Fetch bulletins
     result = fetch_audio_bulletins()
     
+    # Download
     if result.get("english"):
         path = download_audio(result["english"])
         if path:
-            
             logger.info(f"💾 English saved: {path}")
     
     if result.get("hindi"):
@@ -447,4 +503,20 @@ if __name__ == "__main__":
         if path:
             logger.info(f"💾 Hindi saved: {path}")
     
-    logger.info("✨ Test complete")
+    # Summary
+    logger.info("\n" + "=" * 60)
+    if result["english"] or result["hindi"]:
+        logger.info("✅ Process completed")
+        
+        # List files
+        if os.path.exists(Config.AUDIO_DIR):
+            files = [f for f in os.listdir(Config.AUDIO_DIR) if f.endswith('.mp3')]
+            if files:
+                logger.info(f"📁 Files in {Config.AUDIO_DIR}:")
+                for f in files[-3:]:
+                    logger.info(f"   • {f}")
+    else:
+        logger.error("❌ No news found")
+        logger.info("💡 Try visiting: https://www.newsonair.gov.in/national-bulletins/")
+    
+    logger.info("\n✨ Done")
