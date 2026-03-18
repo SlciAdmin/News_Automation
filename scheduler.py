@@ -1,3 +1,4 @@
+# scheduler.py - ✅ COMPLETE MERGED VERSION
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import logging
@@ -14,24 +15,27 @@ import time as time_module
 logger = logging.getLogger(__name__)
 
 def in_broadcast_window():
+    """Check if current time is within broadcast window"""
     ist = pytz.timezone(Config.TIMEZONE)
     now = datetime.now(ist)
     return Config.SCHEDULE_START_HOUR <= now.hour < Config.SCHEDULE_END_HOUR
 
 def run_headlines_tts_broadcast(triggered_by='scheduler'):
     """
-    ✅ CORE: Fetch REAL headlines → TTS (EN+HI) → WhatsApp AUDIO ONLY
+    ✅ CORE: Fetch ALL 6 REAL headlines → TTS (EN+HI) → WhatsApp AUDIO ONLY
     """
     logger.info(f"🎙️ HEADLINES TTS BROADCAST STARTED ({triggered_by})")
     
     try:
-        # 1. Get subscribers
+        # 1. ✅ Get active subscribers
         subscribers = database.get_active_subscribers()
         if not subscribers:
             logger.warning("⚠️ No active subscribers found")
             return {"success": False, "message": "No subscribers", "sent": 0, "failed": 0}
         
-        # 2. Test WhatsApp connection
+        logger.info(f"👥 Found {len(subscribers)} active subscribers")
+        
+        # 2. ✅ Test WhatsApp connection
         logger.info("🔌 Testing WhatsApp API connection...")
         wa = whatsapp_api.WhatsAppCloudAPI()
         if not wa.test_connection():
@@ -39,29 +43,49 @@ def run_headlines_tts_broadcast(triggered_by='scheduler'):
             return {"success": False, "message": "WhatsApp API failed", "sent": 0, "failed": 0}
         logger.info("✅ WhatsApp API connected")
         
-        # 3. ✅ Fetch REAL headlines from website (NO DUMMY)
-        logger.info("🔍 Fetching REAL headlines from newsonair.gov.in...")
+        # 3. ✅✅✅ FETCH ALL 6 REAL HEADLINES (MERGED IMPROVED LOGIC)
+        logger.info("🔍 Fetching ALL 6 headlines from newsonair.gov.in...")
         news_data = news_fetcher.fetch_morning_headlines()
         
-        # ✅ MERGED: Better error handling with actual error message
-        if not news_data.get('success') or not news_data.get('headlines'):
+        # ✅ Enhanced error handling with debug info
+        if not news_data.get('success'):
             error_msg = news_data.get('error', 'Unknown error')
             logger.error(f"❌ Failed to fetch headlines: {error_msg}")
             return {
-                "success": False, 
-                "message": f"Could not fetch headlines: {error_msg}", 
-                "sent": 0, 
+                "success": False,
+                "message": f"Could not fetch headlines: {error_msg}",
+                "sent": 0,
                 "failed": 0,
-                "error_details": error_msg
+                "error_details": error_msg,
+                "debug_hint": "Check if website structure changed or network issue"
             }
         
-        headlines = news_data['headlines'][:6]  # Ensure max 6
-        logger.info(f"✅ Got {len(headlines)} REAL headlines")
-        for i, hl in enumerate(headlines, 1):
-            logger.info(f"   {i}. {hl[:70]}...")
+        # ✅ Get headlines and validate count
+        headlines = news_data.get('headlines', [])
         
-        # 4. ✅ Generate TTS (English + Hindi)
-        logger.info("🎤 Generating human-like TTS...")
+        if not headlines:
+            logger.error("❌ No headlines extracted - website may have changed")
+            return {
+                "success": False,
+                "message": "No headlines could be extracted",
+                "sent": 0,
+                "failed": 0,
+                "debug_hint": "Check news_fetcher.py regex patterns"
+            }
+        
+        # ⚠️ Warning if less than 6, but still proceed
+        if len(headlines) < 6:
+            logger.warning(f"⚠️ Only got {len(headlines)} headlines (expected 6) - proceeding anyway")
+        else:
+            logger.info(f"✅ Perfect! Got all {len(headlines)} headlines")
+        
+        # ✅ Log each headline for verification
+        logger.info(f"✅ Got {len(headlines)} headlines:")
+        for i, hl in enumerate(headlines, 1):
+            logger.info(f"   📰 {i}. {hl}")
+        
+        # 4. ✅ Generate TTS in BOTH languages (English + Hindi)
+        logger.info("🎤 Generating human-like TTS audio (English + Hindi)...")
         tts = TTSEngine()
         audio_paths = tts.generate_both_languages(headlines)
         
@@ -69,19 +93,30 @@ def run_headlines_tts_broadcast(triggered_by='scheduler'):
             logger.error("❌ TTS generation failed - no audio files created")
             return {"success": False, "message": "TTS generation failed", "sent": 0, "failed": 0}
         
-        logger.info(f"✅ TTS generated: {list(audio_paths.keys())}")
+        logger.info(f"✅ TTS audio files generated: {list(audio_paths.keys())}")
+        for lang, path in audio_paths.items():
+            size_kb = os.path.getsize(path) / 1024 if os.path.exists(path) else 0
+            logger.info(f"   🎵 {lang.upper()}: {os.path.basename(path)} ({size_kb:.1f} KB)")
         
         # 5. ✅ Send via WhatsApp - DIRECT AUDIO FILES (NO hosting needed)
         sent, failed = 0, 0
+        failed_phones = []
         ist = database.get_ist_time()
-        date_str = ist.strftime("%d %b %Y")
+        
+        logger.info(f"📤 Starting WhatsApp broadcast to {len(subscribers)} subscribers...")
         
         for sub in subscribers:
+            # ✅ Clean and format phone number
             phone = ''.join(filter(str.isdigit, str(sub['phone_number'])))
-            if phone.startswith('0'): phone = phone[1:]
-            if not phone.startswith('91'): phone = '91' + phone
+            if phone.startswith('0'): 
+                phone = phone[1:]
+            if not phone.startswith('91'): 
+                phone = '91' + phone
+            
             if len(phone) != 12:
                 logger.warning(f"⚠️ Invalid phone format: {sub['phone_number']}")
+                failed += 1
+                failed_phones.append(sub['phone_number'])
                 continue
             
             try:
@@ -94,9 +129,11 @@ def run_headlines_tts_broadcast(triggered_by='scheduler'):
                             logger.info(f"✅ EN audio sent to {phone}")
                         else:
                             logger.warning(f"⚠️ EN audio failed for {phone}: {result}")
-                        time_module.sleep(2)
                     else:
                         logger.warning(f"⚠️ EN audio file not found: {en_path}")
+                
+                # Small delay between languages
+                time_module.sleep(1)
                 
                 # ✅ Send Hindi audio DIRECTLY
                 if 'hi' in audio_paths:
@@ -107,20 +144,21 @@ def run_headlines_tts_broadcast(triggered_by='scheduler'):
                             logger.info(f"✅ HI audio sent to {phone}")
                         else:
                             logger.warning(f"⚠️ HI audio failed for {phone}: {result}")
-                        time_module.sleep(2)
                     else:
                         logger.warning(f"⚠️ HI audio file not found: {hi_path}")
                 
                 sent += 1
-                logger.info(f"✅ Sent to {phone}")
+                logger.info(f"✅ Completed sending to {phone} | Progress: {sent}/{len(subscribers)}")
                 
             except Exception as e:
                 failed += 1
+                failed_phones.append(phone)
                 logger.error(f"❌ Failed to send to {phone}: {e}", exc_info=True)
             
-            time_module.sleep(2)  # Rate limit between subscribers
+            # ✅ Rate limit between subscribers (avoid WhatsApp bans)
+            time_module.sleep(2)
         
-        # ✅ Cleanup local TTS files
+        # ✅ Cleanup local TTS files after broadcast
         for lang, path in audio_paths.items():
             if path and os.path.exists(path):
                 try:
@@ -129,49 +167,64 @@ def run_headlines_tts_broadcast(triggered_by='scheduler'):
                 except Exception as e:
                     logger.warning(f"⚠️ Could not delete {path}: {e}")
         
-        # ✅ Log broadcast results
+        # ✅ Log broadcast results to database
         database.log_broadcast(
             sent=sent, 
             failed=failed,
             en_url="AUDIO_SENT_DIRECT_EN",
             hi_url="AUDIO_SENT_DIRECT_HI",
             triggered_by=triggered_by,
-            en_duration=len(headlines) * 12,
+            en_duration=len(headlines) * 12,  # Estimated duration
             hi_duration=len(headlines) * 15
         )
         
-        logger.info(f"🏁 Broadcast Complete: {sent} sent, {failed} failed")
+        # ✅ Final summary
+        logger.info(f"🏁 Broadcast Complete: {sent} sent, {failed} failed out of {len(subscribers)}")
+        
+        if failed_phones:
+            logger.warning(f"⚠️ Failed phones: {failed_phones[:10]}{'...' if len(failed_phones) > 10 else ''}")
+        
         return {
             "success": True, 
             "sent": sent, 
             "failed": failed,
             "total": len(subscribers),
             "headlines_count": len(headlines),
-            "languages": list(audio_paths.keys())
+            "languages": list(audio_paths.keys()),
+            "timestamp": ist.isoformat()
         }
         
     except Exception as e:
         logger.error(f"❌ Broadcast error: {e}", exc_info=True)
         return {"success": False, "error": str(e), "sent": 0, "failed": 0}
 
-# Backward compatibility
+
+# Backward compatibility alias
 def run_broadcast_logic(triggered_by='scheduler'):
     return run_headlines_tts_broadcast(triggered_by)
 
+
 def start_scheduler():
+    """Initialize and start the APScheduler"""
     scheduler = BackgroundScheduler(timezone=pytz.timezone(Config.TIMEZONE))
+    
+    # Schedule daily broadcast at configured hour (e.g., 9:00 AM IST)
     scheduler.add_job(
         func=run_headlines_tts_broadcast,
         trigger=CronTrigger(hour=Config.SCHEDULE_START_HOUR, minute=0),
-        id='headlines_9am',
+        id='headlines_daily_broadcast',
         kwargs={'triggered_by': 'scheduler'},
         replace_existing=True
     )
+    
     scheduler.start()
-    logger.info(f"✅ Scheduler: Daily {Config.SCHEDULE_START_HOUR}:00 AM IST")
+    logger.info(f"✅ Scheduler started: Daily {Config.SCHEDULE_START_HOUR}:00 AM IST")
+    
     return scheduler
 
+
 def stop_scheduler(sched):
+    """Gracefully stop the scheduler"""
     if sched and getattr(sched, 'running', False):
         sched.shutdown(wait=True)
         logger.info("🛑 Scheduler stopped")
