@@ -22,7 +22,7 @@ def in_broadcast_window():
 
 def run_headlines_tts_broadcast(triggered_by='scheduler'):
     """
-    ✅ CORE: Fetch ALL 6 REAL headlines → TTS (EN+HI) → WhatsApp AUDIO ONLY
+    ✅ CORE: Fetch ALL 6 REAL headlines → TTS (EN+HI) → WhatsApp with EXACT FORMAT
     """
     logger.info(f"🎙️ HEADLINES TTS BROADCAST STARTED ({triggered_by})")
     
@@ -43,7 +43,7 @@ def run_headlines_tts_broadcast(triggered_by='scheduler'):
             return {"success": False, "message": "WhatsApp API failed", "sent": 0, "failed": 0}
         logger.info("✅ WhatsApp API connected")
         
-        # 3. ✅✅✅ FETCH ALL 6 REAL HEADLINES (MERGED IMPROVED LOGIC)
+        # 3. ✅✅✅ FETCH ALL 6 REAL HEADLINES
         logger.info("🔍 Fetching ALL 6 headlines from newsonair.gov.in...")
         news_data = news_fetcher.fetch_morning_headlines()
         
@@ -98,13 +98,34 @@ def run_headlines_tts_broadcast(triggered_by='scheduler'):
             size_kb = os.path.getsize(path) / 1024 if os.path.exists(path) else 0
             logger.info(f"   🎵 {lang.upper()}: {os.path.basename(path)} ({size_kb:.1f} KB)")
         
-        # 5. ✅ Send via WhatsApp - DIRECT AUDIO FILES (NO hosting needed)
+        # 5. ✅✅✅ Send via WhatsApp with EXACT FORMAT REQUESTED
         sent, failed = 0, 0
         failed_phones = []
         ist = database.get_ist_time()
         
-        logger.info(f"📤 Starting WhatsApp broadcast to {len(subscribers)} subscribers...")
+        # ✅ Format date and time for both languages
+        date_en = ist.strftime("%d %B %Y")           # 18 March 2026
+        time_en = ist.strftime("%I:%M %p")            # 10:00 AM
+        day_en = ist.strftime("%A")                   # Wednesday
+
+        date_hi = ist.strftime("%d %B %Y")            # Same date
+        time_hi = ist.strftime("%I:%M %p")
         
+        # Hindi day name mapping
+        day_hi_map = {
+            'Monday': 'सोमवार', 'Tuesday': 'मंगलवार', 'Wednesday': 'बुधवार',
+            'Thursday': 'गुरुवार', 'Friday': 'शुक्रवार', 'Saturday': 'शनिवार', 'Sunday': 'रविवार'
+        }
+        day_hi = day_hi_map.get(day_en, day_en)
+
+        # Hindi time conversion (AM/PM → पूर्वाह्न/अपराह्न)
+        time_parts = time_en.split()
+        time_num = time_parts[0]
+        time_period = "पूर्वाह्न" if time_parts[1].upper() == "AM" else "अपराह्न"
+        time_hi_formatted = f"{time_num} {time_period}"
+
+        logger.info(f"📤 Starting WhatsApp broadcast to {len(subscribers)} subscribers...")
+
         for sub in subscribers:
             # ✅ Clean and format phone number
             phone = ''.join(filter(str.isdigit, str(sub['phone_number'])))
@@ -120,7 +141,23 @@ def run_headlines_tts_broadcast(triggered_by='scheduler'):
                 continue
             
             try:
-                # ✅ Send English audio DIRECTLY
+                # ==================== 🇬🇧 ENGLISH SECTION ====================
+                
+                # ✅ Step 1: English Greeting Text
+                en_greeting = f"""🙏 Jai Ram Ji! Good Morning
+
+📅 Date: {date_en}
+⏰ Time: {time_en}
+📰 AIR Morning News - {day_en}
+
+🎧 Today's Top {len(headlines)} Headlines in English"""
+                
+                success, _ = wa.send_text(phone, en_greeting)
+                if success:
+                    logger.info(f"✅ English greeting sent to {phone}")
+                time_module.sleep(1)
+                
+                # ✅ Step 2: Send English Audio
                 if 'en' in audio_paths:
                     en_path = audio_paths['en']
                     if os.path.exists(en_path):
@@ -132,10 +169,25 @@ def run_headlines_tts_broadcast(triggered_by='scheduler'):
                     else:
                         logger.warning(f"⚠️ EN audio file not found: {en_path}")
                 
-                # Small delay between languages
+                time_module.sleep(2)  # Gap between languages
+                
+                # ==================== 🇮🇳 HINDI SECTION ====================
+                
+                # ✅ Step 3: Hindi Greeting Text
+                hi_greeting = f"""🙏 जय राम जी! शुभ प्रभात
+
+📅 तिथि: {date_hi}
+⏰ समय: {time_hi_formatted}
+📰 एआईआर मॉर्निंग न्यूज़ - {day_hi}
+
+🎧 आज की {len(headlines)} प्रमुख सुर्खियाँ हिंदी में"""
+                
+                success, _ = wa.send_text(phone, hi_greeting)
+                if success:
+                    logger.info(f"✅ Hindi greeting sent to {phone}")
                 time_module.sleep(1)
                 
-                # ✅ Send Hindi audio DIRECTLY
+                # ✅ Step 4: Send Hindi Audio
                 if 'hi' in audio_paths:
                     hi_path = audio_paths['hi']
                     if os.path.exists(hi_path):
@@ -146,6 +198,14 @@ def run_headlines_tts_broadcast(triggered_by='scheduler'):
                             logger.warning(f"⚠️ HI audio failed for {phone}: {result}")
                     else:
                         logger.warning(f"⚠️ HI audio file not found: {hi_path}")
+                
+                time_module.sleep(1)
+                
+                # ✅ Step 5: Final Closing Message (Both Languages)
+                closing_msg = "✨ Have a nice day! 🌞\n\nधन्यवाद! आपका दिन शुभ हो। 🙏"
+                success, _ = wa.send_text(phone, closing_msg)
+                if success:
+                    logger.info(f"✅ Closing message sent to {phone}")
                 
                 sent += 1
                 logger.info(f"✅ Completed sending to {phone} | Progress: {sent}/{len(subscribers)}")
@@ -174,7 +234,7 @@ def run_headlines_tts_broadcast(triggered_by='scheduler'):
             en_url="AUDIO_SENT_DIRECT_EN",
             hi_url="AUDIO_SENT_DIRECT_HI",
             triggered_by=triggered_by,
-            en_duration=len(headlines) * 12,  # Estimated duration
+            en_duration=len(headlines) * 12,
             hi_duration=len(headlines) * 15
         )
         
