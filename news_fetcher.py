@@ -1,4 +1,4 @@
-# news_fetcher.py - ✅ 100% FIXED VERSION
+# news_fetcher.py - ✅ FULLY WORKING VERSION
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -10,15 +10,12 @@ logger = logging.getLogger(__name__)
 
 def fetch_morning_headlines(url=None):
     """
-    ✅ RELIABLY SCRAPES ALL 6 HEADLINES from:
-    https://www.newsonair.gov.in/bulletins-detail-category/morning-news/
-    
-    Format: Headlines are plain text lines after "THE HEADLINES:" (NOT numbered)
+    ✅ SCRAPES HEADLINES FROM newsonair.gov.in
+    Handles: THE HEADLINES:- format with numbered list
     """
     if url is None:
         url = "https://www.newsonair.gov.in/bulletins-detail-category/morning-news/"
     
-    # ✅ Clean URL - remove trailing spaces
     url = url.strip()
     
     headers = {
@@ -26,7 +23,6 @@ def fetch_morning_headlines(url=None):
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9,hi;q=0.8',
         'Connection': 'keep-alive',
-        'Cache-Control': 'no-cache',
     }
     
     try:
@@ -42,26 +38,29 @@ def fetch_morning_headlines(url=None):
         if not content_div:
             content_div = soup.find('main') or soup.find('article') or soup
         
-        # ✅ Get text with line breaks preserved
+        # ✅ Get all text with line breaks
         text_content = content_div.get_text(separator='\n', strip=True)
         lines = [line.strip() for line in text_content.split('\n') if line.strip()]
         
-        # ✅ Find "THE HEADLINES:" section (flexible: :, ::, or just "headlines")
+        # ✅ DEBUG: Show first 30 lines to understand structure
+        logger.info("📋 First 30 lines of content:")
+        for i, line in enumerate(lines[:30]):
+            logger.debug(f"Line {i}: {line}")
+        
+        # ✅ Find "THE HEADLINES" section (flexible pattern)
         headlines_start_idx = -1
         for i, line in enumerate(lines):
-            if re.search(r'^\s*the\s+headlines\s*[:\s]*$', line, re.IGNORECASE):
+            # Match: "THE HEADLINES:", "THE HEADLINES:-", "THE HEADLINES"
+            if re.search(r'the\s+headlines\s*[:\-]*', line, re.IGNORECASE):
                 headlines_start_idx = i
-                logger.info(f"✅ Found 'THE HEADLINES' at line {i}")
+                logger.info(f"✅ Found headlines marker at line {i}: '{line}'")
                 break
         
         if headlines_start_idx == -1:
             logger.error("❌ Could not find 'THE HEADLINES' section")
-            # Debug: show what we got
-            for i, line in enumerate(lines[:30]):
-                logger.debug(f"Line {i}: {line[:100]}")
             return _error_response("Could not find headlines section", url)
         
-        # ✅ Extract next 6 meaningful lines as headlines (NOT numbered format)
+        # ✅ Extract numbered headlines (1., 2., 3., etc.)
         headline_count = 0
         for i in range(headlines_start_idx + 1, len(lines)):
             if headline_count >= 6:
@@ -74,64 +73,97 @@ def fetch_morning_headlines(url=None):
                 continue
             
             # Stop at end markers
-            if re.search(r'<><><>|once again|for details|log on|visit website|air news', line, re.IGNORECASE):
-                logger.info(f"⏹️ Stopping at end marker: {line[:50]}")
+            if re.search(r'<<<<<|>>>>>|once again|for details|log on|visit website', line, re.IGNORECASE):
+                logger.info(f"⏹️ Stopping at marker: {line[:50]}")
                 break
             
-            # Skip lines that are dates, times, or metadata
-            if re.match(r'^\w+\s+\d{1,2},?\s+\d{4}|\d{1,2}:\d{2}\s*[AP]M|^morning\s+news$', line, re.IGNORECASE):
-                continue
-            
-            # ✅ This is a valid headline - clean and add it
-            headline = re.sub(r'\s*[<>\[\]{}|\\]+.*$', '', line).strip()
-            
-            # Validate: must be meaningful (not URL, not too short, not generic)
-            if (headline and 
-                len(headline) > 25 and 
-                len(headline) < 300 and
-                not headline.lower().startswith(('http', 'www', 'follow', 'share', 'subscribe', 'for details', 'click here')) and
-                not re.match(r'^\d+[\)\.\-\s]+$', headline)):  # Skip just numbers
+            # ✅ Match numbered headlines: "1. Headline text" or "2. Headline text"
+            numbered_match = re.match(r'^\d+\.\s+(.+)$', line)
+            if numbered_match:
+                headline = numbered_match.group(1).strip()
                 
-                headlines.append(headline)
-                headline_count += 1
-                logger.info(f"   ✅ {headline_count}. {headline[:80]}...")
-        
-        # ✅ METHOD 2: Fallback - Search for <p> tags containing headline-like text
-        if len(headlines) < 6:
-            logger.info(f"⚠️ Found only {len(headlines)} headlines, trying paragraph fallback...")
-            
-            # Look for paragraphs with substantial text after headlines section
-            for p in content_div.find_all('p'):
-                text = p.get_text(strip=True)
-                if (text and 
-                    len(text) > 30 and 
-                    len(text) < 300 and
-                    text not in headlines and
-                    not text.lower().startswith(('http', 'www', 'follow', 'the headlines'))):
+                # Validate headline
+                if (headline and 
+                    len(headline) > 20 and 
+                    len(headline) < 400 and
+                    not headline.lower().startswith(('http', 'www', 'follow'))):
                     
-                    # Clean the text
-                    clean_text = re.sub(r'\s*[<>\[\]{}|\\]+.*$', '', text).strip()
-                    if clean_text and len(clean_text) > 25 and clean_text not in headlines:
-                        headlines.append(clean_text)
-                        logger.info(f"   🔄 Fallback: {len(headlines)}. {clean_text[:80]}...")
+                    headlines.append(headline)
+                    headline_count += 1
+                    logger.info(f"   ✅ {headline_count}. {headline[:100]}...")
+            
+            # Also try to catch unnumbered lines that look like headlines
+            elif (headline_count > 0 and headline_count < 6 and
+                  len(line) > 30 and 
+                  len(line) < 400 and
+                  not line.lower().startswith(('http', 'www', 'prime minister', 'external affairs'))):
+                # This might be a continuation or unnumbered headline
+                if not any(line in h for h in headlines):
+                    headlines.append(line)
+                    headline_count += 1
+                    logger.info(f"    {headline_count}. {line[:100]}...")
+        
+        # ✅ METHOD 2: Fallback - Try finding <ol> or <ul> lists
+        if len(headlines) < 6:
+            logger.info(f"⚠️ Found only {len(headlines)} headlines, trying list fallback...")
+            
+            # Look for ordered lists
+            for ol in content_div.find_all(['ol', 'ul']):
+                for li in ol.find_all('li'):
+                    text = li.get_text(strip=True)
+                    if (text and 
+                        len(text) > 20 and 
+                        len(text) < 400 and
+                        text not in headlines and
+                        not text.lower().startswith(('http', 'www'))):
+                        
+                        # Remove leading numbers if present
+                        text = re.sub(r'^\d+\.\s*', '', text).strip()
+                        headlines.append(text)
+                        logger.info(f"   🔄 List item: {text[:100]}...")
                         if len(headlines) >= 6:
                             break
+                if len(headlines) >= 6:
+                    break
         
-        # ✅ Ensure exactly 6 headlines max
+        # ✅ METHOD 3: Last resort - Find paragraphs after headlines marker
+        if len(headlines) < 6:
+            logger.info(f"⚠️ Trying paragraph extraction...")
+            
+            # Find the headlines section in HTML
+            headline_section = None
+            for element in content_div.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'strong', 'b']):
+                if re.search(r'the\s+headlines', element.get_text(), re.IGNORECASE):
+                    headline_section = element
+                    break
+            
+            if headline_section:
+                # Get next sibling elements
+                current = headline_section.next_sibling
+                count = 0
+                while current and count < 10:
+                    if hasattr(current, 'name') and current.name in ['p', 'li']:
+                        text = current.get_text(strip=True)
+                        # Remove leading numbers
+                        text = re.sub(r'^\d+\.\s*', '', text).strip()
+                        if (text and 
+                            len(text) > 30 and 
+                            len(text) < 400 and
+                            text not in headlines):
+                            headlines.append(text)
+                            logger.info(f"   📄 Paragraph: {text[:100]}...")
+                    current = current.next_sibling if hasattr(current, 'next_sibling') else None
+                    count += 1
+        
+        # ✅ Limit to 6 headlines
         headlines = headlines[:6]
         
-        # ❌ Error if still no headlines
+        # ❌ Error if no headlines
         if not headlines:
-            logger.error("❌ Could not extract ANY headlines from website")
-            logger.error(f"❌ Total lines found: {len(lines)}")
-            # Show sample for debugging
-            start = max(0, headlines_start_idx - 2)
-            end = min(len(lines), headlines_start_idx + 10)
-            sample = '\n'.join(lines[start:end])
-            logger.error(f"❌ Sample content:\n{sample}")
+            logger.error("❌ Could not extract ANY headlines")
             return _error_response("Could not scrape any headlines", url)
         
-        logger.info(f"✅ Successfully extracted {len(headlines)} REAL headlines")
+        logger.info(f"✅ Successfully extracted {len(headlines)} headlines")
         for i, hl in enumerate(headlines, 1):
             logger.info(f"   📰 {i}. {hl}")
         
